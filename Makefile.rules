@@ -752,7 +752,7 @@ BCCompile.CXX = $(LLVMCXX) $(CPP.Flags) $(CXX.Flags) $(CXXFLAGS) $(CPPFLAGS) \
 
 ProgInstall   = $(INSTALL) $(Install.StripFlag) -m 0755
 ScriptInstall = $(INSTALL) -m 0755
-DataInstall   = $(INSTALL) -m 0644
+DataInstall   = $(INSTALL) -p -m 0644
 
 # When compiling under Mingw/Cygwin, the tblgen tool expects Windows
 # paths. In this case, the SYSPATH function (defined in
