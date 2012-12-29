@@ -1,5 +1,5 @@
 %bcond_with doxygen
-%global gcc_version 4.7.1
+%global gcc_version 4.7
 %bcond_without clang
 
 %global downloadurl http://llvm.org/%{?prerel:pre-}releases/%{version}%{?prerel:/%{prerel}}
