@@ -71,7 +71,7 @@ native programs that use the LLVM infrastructure.
 
 %package -n libllvm
 Summary:        LLVM shared libraries
-Group:          System Environment/Libraries
+Group:          System/Libraries
 
 %description -n libllvm
 Shared libraries for the LLVM compiler infrastructure.
