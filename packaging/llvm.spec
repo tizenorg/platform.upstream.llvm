@@ -26,6 +26,7 @@ Source1:        clang-%{version}.src.tar.gz
 # multilib fixes
 Source2:        llvm-Config-config.h
 Source3:        llvm-Config-llvm-config.h
+Source1001: 	llvm.manifest
 
 BuildRequires: python-devel
 BuildRequires:  bison
@@ -164,6 +165,7 @@ API documentation for the Clang compiler.
 
 %prep
 %setup -q -n llvm-%{version}%{?prerel}.src %{?with_clang:-a1}
+cp %{SOURCE1001} .
 rm -r -f tools/clang
 %if %{with clang}
 mv clang-%{version}%{?prerel}.src tools/clang
@@ -345,6 +347,7 @@ exit 0
 
 
 %files
+%manifest %{name}.manifest
 %defattr(-,root,root,-)
 %license LICENSE.TXT
 %{_bindir}/bugpoint
@@ -356,6 +359,7 @@ exit 0
 %{_bindir}/opt
 
 %files devel
+%manifest %{name}.manifest
 %defattr(-,root,root,-)
 %{_bindir}/llvm-config-%{__isa_bits}
 %{_includedir}/%{name}
@@ -363,6 +367,7 @@ exit 0
 %{_libdir}/%{name}/*.a
 
 %files -n libllvm
+%manifest %{name}.manifest
 %defattr(-,root,root,-)
 %config(noreplace) %{_sysconfdir}/ld.so.conf.d/llvm-%{_arch}.conf
 %dir %{_libdir}/%{name}
@@ -373,6 +378,7 @@ exit 0
 
 %if %{with clang}
 %files -n clang
+%manifest %{name}.manifest
 %defattr(-,root,root,-)
 %{_bindir}/clang*
 %{_bindir}/c-index-test
@@ -380,11 +386,13 @@ exit 0
 %{_prefix}/lib/clang
 
 %files -n clang-devel
+%manifest %{name}.manifest
 %defattr(-,root,root,-)
 %{_includedir}/clang
 %{_includedir}/clang-c
 
 %files -n clang-analyzer
+%manifest %{name}.manifest
 %defattr(-,root,root,-)
 %{_bindir}/scan-build
 %{_bindir}/scan-view
@@ -394,11 +402,13 @@ exit 0
 
 %if %{with doxygen}
 %files apidoc
+%manifest %{name}.manifest
 %defattr(-,root,root,-)
 %doc apidoc/*
 
 %if %{with clang}
 %files -n clang-apidoc
+%manifest %{name}.manifest
 %defattr(-,root,root,-)
 %doc clang-apidoc/*
 %endif
