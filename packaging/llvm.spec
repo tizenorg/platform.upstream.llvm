@@ -1,5 +1,5 @@
 %bcond_with doxygen
-%global gcc_version 4.7
+%global gcc_version 4.8
 %bcond_without clang
 
 %global downloadurl http://llvm.org/%{?prerel:pre-}releases/%{version}%{?prerel:/%{prerel}}
@@ -18,7 +18,7 @@ Version:        3.1
 Release:        0
 Summary:        The Low Level Virtual Machine
 
-Group:          Development/Languages
+Group:          Development/Toolchain
 License:        NCSA
 URL:            http://llvm.org/
 Source0:        llvm-%{version}.src.tar.gz
@@ -56,7 +56,6 @@ functionality.
 
 %package devel
 Summary:        Libraries and header files for LLVM
-Group:          Development/Languages
 Requires:       %{name} = %{version}-%{release}
 Requires:       libffi-devel
 Requires:       libstdc++-devel >= 3.4
@@ -72,7 +71,6 @@ native programs that use the LLVM infrastructure.
 
 %package -n libllvm
 Summary:        LLVM shared libraries
-Group:          System/Libraries
 
 %description -n libllvm
 Shared libraries for the LLVM compiler infrastructure.
@@ -82,7 +80,6 @@ Shared libraries for the LLVM compiler infrastructure.
 %package -n clang
 Summary:        A C language family front-end for LLVM
 License:        NCSA
-Group:          Development/Languages
 Requires:       llvm = %{version}-%{release}
 # clang requires gcc, clang++ requires libstdc++-devel
 Requires:       gcc
@@ -101,7 +98,6 @@ as libraries and designed to be loosely-coupled and extensible.
 
 %package -n clang-devel
 Summary:        Header files for clang
-Group:          Development/Languages
 Requires:       clang = %{version}-%{release}
 
 %description -n clang-devel
@@ -111,7 +107,6 @@ This package contains header files for the Clang compiler.
 %package -n clang-analyzer
 Summary:        A source code analysis framework
 License:        NCSA
-Group:          Development/Languages
 Requires:       clang = %{version}-%{release}
 # not picked up automatically since files are currently not instaled
 # in standard Python hierarchies yet
@@ -126,7 +121,6 @@ intended to run in tandem with a build of a project or code base.
 
 %package -n clang-doc
 Summary:        Documentation for Clang
-Group:          Documentation
 BuildArch:      noarch
 Requires:       %{name} = %{version}-%{release}
 
@@ -138,7 +132,6 @@ Documentation for the Clang compiler front-end.
 %if %{with doxygen}
 %package apidoc
 Summary:        API documentation for LLVM
-Group:          Development/Languages
 BuildArch:      noarch
 Requires:       %{name}-doc = %{version}-%{release}
 
@@ -150,7 +143,6 @@ API documentation for the LLVM compiler infrastructure.
 %if %{with clang}
 %package -n clang-apidoc
 Summary:        API documentation for Clang
-Group:          Development/Languages
 BuildArch:      noarch
 Requires:       clang-doc = %{version}-%{release}
 
@@ -164,7 +156,7 @@ API documentation for the Clang compiler.
 
 
 %prep
-%setup -q -n llvm-%{version}%{?prerel}.src %{?with_clang:-a1}
+%setup -q -n llvm-%{version}.src %{?with_clang:-a1}
 cp %{SOURCE1001} .
 rm -r -f tools/clang
 %if %{with clang}
