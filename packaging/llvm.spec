@@ -83,7 +83,7 @@ License:        NCSA
 Requires:       llvm = %{version}-%{release}
 # clang requires gcc, clang++ requires libstdc++-devel
 Requires:       gcc
-Requires:       libstdc++-devel = %{gcc_version}
+Requires:       libstdc++-devel >= %{gcc_version}
 
 %description -n clang
 clang: noun
