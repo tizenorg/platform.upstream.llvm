@@ -7,28 +7,28 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements common infrastructure for libLLVMScalarOpts.a, which 
+// This file implements common infrastructure for libLLVMScalarOpts.a, which
 // implements several scalar transformations over the LLVM intermediate
 // representation, including the C bindings for that library.
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm-c/Transforms/Scalar.h"
+#include "llvm/Transforms/Scalar.h"
 #include "llvm-c/Initialization.h"
-#include "llvm/InitializePasses.h"
-#include "llvm/PassManager.h"
+#include "llvm-c/Transforms/Scalar.h"
 #include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/Verifier.h"
-#include "llvm/Target/TargetData.h"
-#include "llvm/Transforms/Scalar.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/InitializePasses.h"
+#include "llvm/PassManager.h"
 
 using namespace llvm;
 
-/// initializeScalarOptsPasses - Initialize all passes linked into the 
+/// initializeScalarOptsPasses - Initialize all passes linked into the
 /// ScalarOpts library.
 void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializeADCEPass(Registry);
-  initializeBlockPlacementPass(Registry);
+  initializeSampleProfileLoaderPass(Registry);
   initializeCodeGenPreparePass(Registry);
   initializeConstantPropagationPass(Registry);
   initializeCorrelatedValuePropagationPass(Registry);
@@ -44,25 +44,23 @@ void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializeLoopInstSimplifyPass(Registry);
   initializeLoopRotatePass(Registry);
   initializeLoopStrengthReducePass(Registry);
+  initializeLoopRerollPass(Registry);
   initializeLoopUnrollPass(Registry);
   initializeLoopUnswitchPass(Registry);
   initializeLoopIdiomRecognizePass(Registry);
   initializeLowerAtomicPass(Registry);
   initializeLowerExpectIntrinsicPass(Registry);
   initializeMemCpyOptPass(Registry);
-  initializeObjCARCAliasAnalysisPass(Registry);
-  initializeObjCARCAPElimPass(Registry);
-  initializeObjCARCExpandPass(Registry);
-  initializeObjCARCContractPass(Registry);
-  initializeObjCARCOptPass(Registry);
+  initializePartiallyInlineLibCallsPass(Registry);
   initializeReassociatePass(Registry);
   initializeRegToMemPass(Registry);
   initializeSCCPPass(Registry);
   initializeIPSCCPPass(Registry);
+  initializeSROAPass(Registry);
   initializeSROA_DTPass(Registry);
   initializeSROA_SSAUpPass(Registry);
   initializeCFGSimplifyPassPass(Registry);
-  initializeSimplifyLibCallsPass(Registry);
+  initializeStructurizeCFGPass(Registry);
   initializeSinkingPass(Registry);
   initializeTailCallElimPass(Registry);
 }
@@ -115,6 +113,10 @@ void LLVMAddLoopRotatePass(LLVMPassManagerRef PM) {
   unwrap(PM)->add(createLoopRotatePass());
 }
 
+void LLVMAddLoopRerollPass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createLoopRerollPass());
+}
+
 void LLVMAddLoopUnrollPass(LLVMPassManagerRef PM) {
   unwrap(PM)->add(createLoopUnrollPass());
 }
@@ -125,6 +127,10 @@ void LLVMAddLoopUnswitchPass(LLVMPassManagerRef PM) {
 
 void LLVMAddMemCpyOptPass(LLVMPassManagerRef PM) {
   unwrap(PM)->add(createMemCpyOptPass());
+}
+
+void LLVMAddPartiallyInlineLibCallsPass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createPartiallyInlineLibCallsPass());
 }
 
 void LLVMAddPromoteMemoryToRegisterPass(LLVMPassManagerRef PM) {
@@ -153,7 +159,7 @@ void LLVMAddScalarReplAggregatesPassWithThreshold(LLVMPassManagerRef PM,
 }
 
 void LLVMAddSimplifyLibCallsPass(LLVMPassManagerRef PM) {
-  unwrap(PM)->add(createSimplifyLibCallsPass());
+  // NOTE: The simplify-libcalls pass has been removed.
 }
 
 void LLVMAddTailCallEliminationPass(LLVMPassManagerRef PM) {

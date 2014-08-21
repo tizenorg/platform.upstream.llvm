@@ -48,8 +48,7 @@ static bool loadSRW() {
   if (!sChecked) {
     sChecked = true;
 
-    HMODULE hLib = ::LoadLibrary(TEXT("Kernel32"));
-    if (hLib) {
+    if (HMODULE hLib = ::GetModuleHandleW(L"Kernel32.dll")) {
       fpInitializeSRWLock =
         (VOID (WINAPI *)(PSRWLOCK))::GetProcAddress(hLib,
                                                "InitializeSRWLock");
@@ -65,11 +64,10 @@ static bool loadSRW() {
       fpReleaseSRWLockShared =
         (VOID (WINAPI *)(PSRWLOCK))::GetProcAddress(hLib,
                                                "ReleaseSRWLockShared");
-      ::FreeLibrary(hLib);
 
-	  if (fpInitializeSRWLock != NULL) {
-	    sHasSRW = true;
-	  }
+      if (fpInitializeSRWLock != NULL) {
+        sHasSRW = true;
+      }
     }
   }
   return sHasSRW;

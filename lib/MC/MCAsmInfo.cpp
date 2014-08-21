@@ -24,6 +24,8 @@ using namespace llvm;
 
 MCAsmInfo::MCAsmInfo() {
   PointerSize = 4;
+  CalleeSaveStackSlotSize = 4;
+
   IsLittleEndian = true;
   StackGrowsUp = false;
   HasSubsectionsViaSymbols = false;
@@ -32,11 +34,13 @@ MCAsmInfo::MCAsmInfo() {
   HasStaticCtorDtorReferenceInStaticMode = false;
   LinkerRequiresNonEmptyDwarfLines = false;
   MaxInstLength = 4;
-  PCSymbol = "$";
+  MinInstAlignment = 1;
+  DollarIsPC = false;
   SeparatorString = ";";
   CommentColumn = 40;
   CommentString = "#";
   LabelSuffix = ":";
+  DebugLabelSuffix = ":";
   GlobalPrefix = "";
   PrivateGlobalPrefix = ".";
   LinkerPrivateGlobalPrefix = "";
@@ -46,10 +50,8 @@ MCAsmInfo::MCAsmInfo() {
   Code32Directive = ".code32";
   Code64Directive = ".code64";
   AssemblerDialect = 0;
-  AllowQuotesInName = false;
-  AllowNameToStartWithDigit = false;
-  AllowPeriodsInName = true;
-  AllowUTF8 = true;
+  AllowAtInName = false;
+  UseDataRegionDirectives = false;
   ZeroDirective = "\t.zero\t";
   AsciiDirective = "\t.ascii\t";
   AscizDirective = "\t.asciz\t";
@@ -57,12 +59,6 @@ MCAsmInfo::MCAsmInfo() {
   Data16bitsDirective = "\t.short\t";
   Data32bitsDirective = "\t.long\t";
   Data64bitsDirective = "\t.quad\t";
-  DataBegin = "$d.";
-  CodeBegin = "$a.";
-  JT8Begin = "$d.";
-  JT16Begin = "$d.";
-  JT32Begin = "$d.";
-  SupportsDataRegions = false;
   SunStyleELFSectionSwitchSyntax = false;
   UsesELFSectionDirectiveForBSS = false;
   AlignDirective = "\t.align\t";
@@ -73,37 +69,34 @@ MCAsmInfo::MCAsmInfo() {
   GlobalDirective = "\t.globl\t";
   HasSetDirective = true;
   HasAggressiveSymbolFolding = true;
-  LCOMMDirectiveType = LCOMM::None;
   COMMDirectiveAlignmentIsInBytes = true;
+  LCOMMDirectiveAlignmentType = LCOMM::NoAlignment;
   HasDotTypeDotSizeDirective = true;
   HasSingleParameterDotFile = true;
+  HasIdentDirective = false;
   HasNoDeadStrip = false;
-  HasSymbolResolver = false;
   WeakRefDirective = 0;
-  WeakDefDirective = 0;
-  LinkOnceDirective = 0;
+  HasWeakDefDirective = false;
+  HasWeakDefCanBeHiddenDirective = false;
+  HasLinkOnceDirective = false;
   HiddenVisibilityAttr = MCSA_Hidden;
   HiddenDeclarationVisibilityAttr = MCSA_Hidden;
   ProtectedVisibilityAttr = MCSA_Protected;
   HasLEB128 = false;
   SupportsDebugInformation = false;
   ExceptionsType = ExceptionHandling::None;
-  DwarfUsesInlineInfoSection = false;
-  DwarfRequiresRelocationForSectionOffset = true;
-  DwarfSectionOffsetDirective = 0;
-  DwarfUsesLabelOffsetForRanges = true;
-  DwarfUsesRelocationsForStringPool = true;
+  DwarfUsesRelocationsAcrossSections = true;
+  DwarfFDESymbolsUseAbsDiff = false;
   DwarfRegNumForCFI = false;
   HasMicrosoftFastStdCallMangling = false;
-
-  AsmTransCBE = 0;
+  NeedsDwarfSectionOffsetDirective = false;
 }
 
 MCAsmInfo::~MCAsmInfo() {
 }
 
 
-unsigned MCAsmInfo::getULEB128Size(unsigned Value) {
+unsigned MCAsmInfo::getULEB128Size(uint64_t Value) {
   unsigned Size = 0;
   do {
     Value >>= 7;
@@ -112,7 +105,7 @@ unsigned MCAsmInfo::getULEB128Size(unsigned Value) {
   return Size;
 }
 
-unsigned MCAsmInfo::getSLEB128Size(int Value) {
+unsigned MCAsmInfo::getSLEB128Size(int64_t Value) {
   unsigned Size = 0;
   int Sign = Value >> (8 * sizeof(Value) - 1);
   bool IsMore;

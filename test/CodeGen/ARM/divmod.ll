@@ -1,10 +1,18 @@
-; RUN: llc < %s -mtriple=arm-apple-ios5.0 | FileCheck %s
+; RUN: llc < %s -mtriple=arm-apple-ios5.0 -mcpu=cortex-a8 | FileCheck %s -check-prefix=A8
+; RUN: llc < %s -mtriple=arm-apple-ios5.0 -mcpu=swift     | FileCheck %s -check-prefix=SWIFT
+
+; rdar://12481395
 
 define void @foo(i32 %x, i32 %y, i32* nocapture %P) nounwind ssp {
 entry:
-; CHECK: foo:
-; CHECK: bl ___divmodsi4
-; CHECK-NOT: bl ___divmodsi4
+; A8-LABEL: foo:
+; A8: bl ___divmodsi4
+; A8-NOT: bl ___divmodsi4
+
+; SWIFT-LABEL: foo:
+; SWIFT: sdiv
+; SWIFT: mls
+; SWIFT-NOT: bl __divmodsi4
   %div = sdiv i32 %x, %y
   store i32 %div, i32* %P, align 4
   %rem = srem i32 %x, %y
@@ -15,9 +23,14 @@ entry:
 
 define void @bar(i32 %x, i32 %y, i32* nocapture %P) nounwind ssp {
 entry:
-; CHECK: bar:
-; CHECK: bl ___udivmodsi4
-; CHECK-NOT: bl ___udivmodsi4
+; A8-LABEL: bar:
+; A8: bl ___udivmodsi4
+; A8-NOT: bl ___udivmodsi4
+
+; SWIFT-LABEL: bar:
+; SWIFT: udiv
+; SWIFT: mls
+; SWIFT-NOT: bl __udivmodsi4
   %div = udiv i32 %x, %y
   store i32 %div, i32* %P, align 4
   %rem = urem i32 %x, %y
@@ -32,18 +45,22 @@ entry:
 
 define void @do_indent(i32 %cols) nounwind {
 entry:
-; CHECK: do_indent:
+; A8-LABEL: do_indent:
+; SWIFT-LABEL: do_indent:
   %0 = load i32* @flags, align 4
   %1 = and i32 %0, 67108864
   %2 = icmp eq i32 %1, 0
   br i1 %2, label %bb1, label %bb
 
 bb:
-; CHECK: bl ___divmodsi4
+; A8: bl ___divmodsi4
+; SWIFT: sdiv
+; SWIFT: mls
+; SWIFT-NOT: bl __divmodsi4
   %3 = load i32* @tabsize, align 4
   %4 = srem i32 %cols, %3
   %5 = sdiv i32 %cols, %3
-  %6 = tail call i32 @llvm.objectsize.i32(i8* null, i1 false)
+  %6 = tail call i32 @llvm.objectsize.i32.p0i8(i8* null, i1 false)
   %7 = tail call i8* @__memset_chk(i8* null, i32 9, i32 %5, i32 %6) nounwind
   br label %bb1
 
@@ -54,5 +71,24 @@ bb1:
   ret void
 }
 
-declare i32 @llvm.objectsize.i32(i8*, i1) nounwind readnone
+declare i32 @llvm.objectsize.i32.p0i8(i8*, i1) nounwind readnone
 declare i8* @__memset_chk(i8*, i32, i32, i32) nounwind
+
+; rdar://11714607
+define i32 @howmany(i32 %x, i32 %y) nounwind {
+entry:
+; A8-LABEL: howmany:
+; A8: bl ___udivmodsi4
+; A8-NOT: ___udivsi3
+
+; SWIFT-LABEL: howmany:
+; SWIFT: udiv
+; SWIFT: mls
+; SWIFT-NOT: bl __udivmodsi4
+  %rem = urem i32 %x, %y
+  %div = udiv i32 %x, %y
+  %not.cmp = icmp ne i32 %rem, 0
+  %add = zext i1 %not.cmp to i32
+  %cond = add i32 %add, %div
+  ret i32 %cond
+}

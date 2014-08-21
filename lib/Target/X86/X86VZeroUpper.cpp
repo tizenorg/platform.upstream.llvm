@@ -42,7 +42,6 @@ namespace {
 
   private:
     const TargetInstrInfo *TII; // Machine instruction info.
-    MachineBasicBlock *MBB;     // Current basic block
 
     // Any YMM register live-in to this function?
     bool FnHasLiveInYmm;
@@ -84,7 +83,7 @@ namespace {
     //  2) All states must be clean for the result to be clean
     //  3) If none above and one unknown, the result state is also unknown
     //
-    unsigned computeState(unsigned PrevState, unsigned CurState) {
+    static unsigned computeState(unsigned PrevState, unsigned CurState) {
       if (PrevState == ST_INIT)
         return CurState;
 
@@ -106,30 +105,64 @@ FunctionPass *llvm::createX86IssueVZeroUpperPass() {
 }
 
 static bool isYmmReg(unsigned Reg) {
-  if (Reg >= X86::YMM0 && Reg <= X86::YMM15)
-    return true;
+  return (Reg >= X86::YMM0 && Reg <= X86::YMM31);
+}
 
-  return false;
+static bool isZmmReg(unsigned Reg) {
+  return (Reg >= X86::ZMM0 && Reg <= X86::ZMM31);
 }
 
 static bool checkFnHasLiveInYmm(MachineRegisterInfo &MRI) {
   for (MachineRegisterInfo::livein_iterator I = MRI.livein_begin(),
        E = MRI.livein_end(); I != E; ++I)
-    if (isYmmReg(I->first))
+    if (isYmmReg(I->first) || isZmmReg(I->first))
       return true;
 
   return false;
 }
 
+static bool clobbersAllYmmRegs(const MachineOperand &MO) {
+  for (unsigned reg = X86::YMM0; reg <= X86::YMM31; ++reg) {
+    if (!MO.clobbersPhysReg(reg))
+      return false;
+  }
+  for (unsigned reg = X86::ZMM0; reg <= X86::ZMM31; ++reg) {
+    if (!MO.clobbersPhysReg(reg))
+      return false;
+  }
+  return true;
+}
+
 static bool hasYmmReg(MachineInstr *MI) {
-  for (int i = 0, e = MI->getNumOperands(); i != e; ++i) {
+  for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
     const MachineOperand &MO = MI->getOperand(i);
+    if (MI->isCall() && MO.isRegMask() && !clobbersAllYmmRegs(MO))
+      return true;
     if (!MO.isReg())
       continue;
     if (MO.isDebug())
       continue;
     if (isYmmReg(MO.getReg()))
       return true;
+  }
+  return false;
+}
+
+/// clobbersAnyYmmReg() - Check if any YMM register will be clobbered by this
+/// instruction.
+static bool clobbersAnyYmmReg(MachineInstr *MI) {
+  for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
+    const MachineOperand &MO = MI->getOperand(i);
+    if (!MO.isRegMask())
+      continue;
+    for (unsigned reg = X86::YMM0; reg <= X86::YMM31; ++reg) {
+      if (MO.clobbersPhysReg(reg))
+        return true;
+    }
+    for (unsigned reg = X86::ZMM0; reg <= X86::ZMM31; ++reg) {
+      if (MO.clobbersPhysReg(reg))
+        return true;
+    }
   }
   return false;
 }
@@ -145,10 +178,10 @@ bool VZeroUpperInserter::runOnMachineFunction(MachineFunction &MF) {
   // to insert any VZEROUPPER instructions.  This is constant-time, so it is
   // cheap in the common case of no ymm use.
   bool YMMUsed = false;
-  const TargetRegisterClass *RC = X86::VR256RegisterClass;
+  const TargetRegisterClass *RC = &X86::VR256RegClass;
   for (TargetRegisterClass::iterator i = RC->begin(), e = RC->end();
        i != e; i++) {
-    if (MRI.isPhysRegUsed(*i)) {
+    if (!MRI.reg_nodbg_empty(*i)) {
       YMMUsed = true;
       break;
     }
@@ -189,7 +222,6 @@ bool VZeroUpperInserter::processBasicBlock(MachineFunction &MF,
                                            MachineBasicBlock &BB) {
   bool Changed = false;
   unsigned BBNum = BB.getNumber();
-  MBB = &BB;
 
   // Don't process already solved BBs
   if (BBSolved[BBNum])
@@ -205,9 +237,9 @@ bool VZeroUpperInserter::processBasicBlock(MachineFunction &MF,
   }
 
 
-  // The entry MBB for the function may set the inital state to dirty if
+  // The entry MBB for the function may set the initial state to dirty if
   // the function receives any YMM incoming arguments
-  if (MBB == MF.begin()) {
+  if (&BB == MF.begin()) {
     EntryState = ST_CLEAN;
     if (FnHasLiveInYmm)
       EntryState = ST_DIRTY;
@@ -218,11 +250,12 @@ bool VZeroUpperInserter::processBasicBlock(MachineFunction &MF,
   bool BBHasCall = false;
 
   for (MachineBasicBlock::iterator I = BB.begin(); I != BB.end(); ++I) {
-    MachineInstr *MI = I;
     DebugLoc dl = I->getDebugLoc();
+    MachineInstr *MI = I;
+
     bool isControlFlow = MI->isCall() || MI->isReturn();
 
-    // Shortcut: don't need to check regular instructions in dirty state. 
+    // Shortcut: don't need to check regular instructions in dirty state.
     if (!isControlFlow && CurState == ST_DIRTY)
       continue;
 
@@ -236,6 +269,14 @@ bool VZeroUpperInserter::processBasicBlock(MachineFunction &MF,
     // Check for control-flow out of the current function (which might
     // indirectly execute SSE instructions).
     if (!isControlFlow)
+      continue;
+
+    // If the call won't clobber any YMM register, skip it as well. It usually
+    // happens on helper function calls (such as '_chkstk', '_ftol2') where
+    // standard calling convention is not used (RegMask is not used to mark
+    // register clobbered and register usage (def/imp-def/use) is well-dfined
+    // and explicitly specified.
+    if (MI->isCall() && !clobbersAnyYmmReg(MI))
       continue;
 
     BBHasCall = true;
@@ -253,7 +294,7 @@ bool VZeroUpperInserter::processBasicBlock(MachineFunction &MF,
       // When unknown, only compute the information within the block to have
       // it available in the exit if possible, but don't change the block.
       if (EntryState != ST_UNKNOWN) {
-        BuildMI(*MBB, I, dl, TII->get(X86::VZEROUPPER));
+        BuildMI(BB, I, dl, TII->get(X86::VZEROUPPER));
         ++NumVZU;
       }
 

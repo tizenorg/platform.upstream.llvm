@@ -1,4 +1,5 @@
 ; RUN: llc < %s -mtriple=x86_64-linux | FileCheck %s
+; RUN: llc < %s -disable-simplify-libcalls -mtriple=x86_64-linux | FileCheck %s --check-prefix=NOBUILTIN
 ; RUN: llc < %s -mtriple=x86_64-win32 | FileCheck %s
 
 ; This tests codegen time inlining/optimization of memcmp
@@ -20,9 +21,11 @@ bb:                                               ; preds = %entry
 
 return:                                           ; preds = %entry
   ret void
-; CHECK: memcmp2:
+; CHECK-LABEL: memcmp2:
 ; CHECK: movw    ([[A0:%rdi|%rcx]]), %ax
 ; CHECK: cmpw    ([[A1:%rsi|%rdx]]), %ax
+; NOBUILTIN-LABEL: memcmp2:
+; NOBUILTIN: callq
 }
 
 define void @memcmp2a(i8* %X, i32* nocapture %P) nounwind {
@@ -37,7 +40,7 @@ bb:                                               ; preds = %entry
 
 return:                                           ; preds = %entry
   ret void
-; CHECK: memcmp2a:
+; CHECK-LABEL: memcmp2a:
 ; CHECK: cmpw    $28527, ([[A0]])
 }
 
@@ -54,7 +57,7 @@ bb:                                               ; preds = %entry
 
 return:                                           ; preds = %entry
   ret void
-; CHECK: memcmp4:
+; CHECK-LABEL: memcmp4:
 ; CHECK: movl    ([[A0]]), %eax
 ; CHECK: cmpl    ([[A1]]), %eax
 }
@@ -71,7 +74,7 @@ bb:                                               ; preds = %entry
 
 return:                                           ; preds = %entry
   ret void
-; CHECK: memcmp4a:
+; CHECK-LABEL: memcmp4a:
 ; CHECK: cmpl $1869573999, ([[A0]])
 }
 
@@ -87,7 +90,7 @@ bb:                                               ; preds = %entry
 
 return:                                           ; preds = %entry
   ret void
-; CHECK: memcmp8:
+; CHECK-LABEL: memcmp8:
 ; CHECK: movq    ([[A0]]), %rax
 ; CHECK: cmpq    ([[A1]]), %rax
 }
@@ -104,7 +107,7 @@ bb:                                               ; preds = %entry
 
 return:                                           ; preds = %entry
   ret void
-; CHECK: memcmp8a:
+; CHECK-LABEL: memcmp8a:
 ; CHECK: movabsq $8029759185026510694, %rax
 ; CHECK: cmpq	%rax, ([[A0]])
 }

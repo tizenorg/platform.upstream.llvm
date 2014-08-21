@@ -15,8 +15,9 @@
 #include "Hexagon.h"
 #include "HexagonAsmPrinter.h"
 #include "HexagonMachineFunctionInfo.h"
-#include "llvm/Constants.h"
+#include "MCTargetDesc/HexagonMCInst.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/Target/Mangler.h"
@@ -38,9 +39,10 @@ static MCOperand GetSymbolRef(const MachineOperand& MO, const MCSymbol* Symbol,
 }
 
 // Create an MCInst from a MachineInstr
-void llvm::HexagonLowerToMC(const MachineInstr* MI, MCInst& MCI,
+void llvm::HexagonLowerToMC(const MachineInstr* MI, HexagonMCInst& MCI,
                             HexagonAsmPrinter& AP) {
   MCI.setOpcode(MI->getOpcode());
+  MCI.setDesc(MI->getDesc());
 
   for (unsigned i = 0, e = MI->getNumOperands(); i < e; i++) {
     const MachineOperand &MO = MI->getOperand(i);
@@ -49,7 +51,7 @@ void llvm::HexagonLowerToMC(const MachineInstr* MI, MCInst& MCI,
     switch (MO.getType()) {
     default:
       MI->dump();
-      assert(0 && "unknown operand type");
+      llvm_unreachable("unknown operand type");
     case MachineOperand::MO_Register:
       // Ignore all implicit register operands.
       if (MO.isImplicit()) continue;
@@ -71,7 +73,7 @@ void llvm::HexagonLowerToMC(const MachineInstr* MI, MCInst& MCI,
                AP.OutContext));
       break;
     case MachineOperand::MO_GlobalAddress:
-      MCO = GetSymbolRef(MO, AP.Mang->getSymbol(MO.getGlobal()), AP);
+      MCO = GetSymbolRef(MO, AP.getSymbol(MO.getGlobal()), AP);
       break;
     case MachineOperand::MO_ExternalSymbol:
       MCO = GetSymbolRef(MO, AP.GetExternalSymbolSymbol(MO.getSymbolName()),

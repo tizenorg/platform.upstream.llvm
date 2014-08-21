@@ -22,6 +22,10 @@
 
 #define DEBUG_TYPE "machine-licm"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
@@ -29,17 +33,13 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
 #include "llvm/MC/MCInstrItineraries.h"
-#include "llvm/Target/TargetLowering.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetInstrInfo.h"
-#include "llvm/Target/TargetMachine.h"
-#include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallSet.h"
-#include "llvm/ADT/Statistic.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetInstrInfo.h"
+#include "llvm/Target/TargetLowering.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetRegisterInfo.h"
 using namespace llvm;
 
 static cl::opt<bool>
@@ -62,7 +62,7 @@ namespace {
   class MachineLICM : public MachineFunctionPass {
     const TargetMachine   *TM;
     const TargetInstrInfo *TII;
-    const TargetLowering *TLI;
+    const TargetLoweringBase *TLI;
     const TargetRegisterInfo *TRI;
     const MachineFrameInfo *MFI;
     MachineRegisterInfo *MRI;
@@ -172,7 +172,7 @@ namespace {
                    BitVector &PhysRegDefs,
                    BitVector &PhysRegClobbers,
                    SmallSet<int, 32> &StoredFIs,
-                   SmallVector<CandidateInfo, 32> &Candidates);
+                   SmallVectorImpl<CandidateInfo> &Candidates);
 
     /// AddToLiveIns - Add register 'Reg' to the livein sets of BBs in the
     /// current loop.
@@ -334,7 +334,7 @@ bool MachineLICM::runOnMachineFunction(MachineFunction &MF) {
     DEBUG(dbgs() << "******** Pre-regalloc Machine LICM: ");
   else
     DEBUG(dbgs() << "******** Post-regalloc Machine LICM: ");
-  DEBUG(dbgs() << MF.getFunction()->getName() << " ********\n");
+  DEBUG(dbgs() << MF.getName() << " ********\n");
 
   if (PreRegAlloc) {
     // Estimate register pressure during pre-regalloc pass.
@@ -404,7 +404,7 @@ void MachineLICM::ProcessMI(MachineInstr *MI,
                             BitVector &PhysRegDefs,
                             BitVector &PhysRegClobbers,
                             SmallSet<int, 32> &StoredFIs,
-                            SmallVector<CandidateInfo, 32> &Candidates) {
+                            SmallVectorImpl<CandidateInfo> &Candidates) {
   bool RuledOut = false;
   bool HasNonInvariantUse = false;
   unsigned Def = 0;
@@ -445,8 +445,8 @@ void MachineLICM::ProcessMI(MachineInstr *MI,
     }
 
     if (MO.isImplicit()) {
-      for (const uint16_t *AS = TRI->getOverlaps(Reg); *AS; ++AS)
-        PhysRegClobbers.set(*AS);
+      for (MCRegAliasIterator AI(Reg, TRI, true); AI.isValid(); ++AI)
+        PhysRegClobbers.set(*AI);
       if (!MO.isDead())
         // Non-dead implicit def? This cannot be hoisted.
         RuledOut = true;
@@ -465,15 +465,15 @@ void MachineLICM::ProcessMI(MachineInstr *MI,
     // If we have already seen another instruction that defines the same
     // register, then this is not safe.  Two defs is indicated by setting a
     // PhysRegClobbers bit.
-    for (const uint16_t *AS = TRI->getOverlaps(Reg); *AS; ++AS) {
+    for (MCRegAliasIterator AS(Reg, TRI, true); AS.isValid(); ++AS) {
       if (PhysRegDefs.test(*AS))
         PhysRegClobbers.set(*AS);
-      if (PhysRegClobbers.test(*AS))
-        // MI defined register is seen defined by another instruction in
-        // the loop, it cannot be a LICM candidate.
-        RuledOut = true;
       PhysRegDefs.set(*AS);
     }
+    if (PhysRegClobbers.test(Reg))
+      // MI defined register is seen defined by another instruction in
+      // the loop, it cannot be a LICM candidate.
+      RuledOut = true;
   }
 
   // Only consider reloads for now and remats which do not have register
@@ -502,7 +502,7 @@ void MachineLICM::HoistRegionPostRA() {
 
   // Walk the entire region, count number of defs for each register, and
   // collect potential LICM candidates.
-  const std::vector<MachineBasicBlock*> Blocks = CurLoop->getBlocks();
+  const std::vector<MachineBasicBlock *> &Blocks = CurLoop->getBlocks();
   for (unsigned i = 0, e = Blocks.size(); i != e; ++i) {
     MachineBasicBlock *BB = Blocks[i];
 
@@ -517,8 +517,8 @@ void MachineLICM::HoistRegionPostRA() {
     for (MachineBasicBlock::livein_iterator I = BB->livein_begin(),
            E = BB->livein_end(); I != E; ++I) {
       unsigned Reg = *I;
-      for (const uint16_t *AS = TRI->getOverlaps(Reg); *AS; ++AS)
-        PhysRegDefs.set(*AS);
+      for (MCRegAliasIterator AI(Reg, TRI, true); AI.isValid(); ++AI)
+        PhysRegDefs.set(*AI);
     }
 
     SpeculationState = SpeculateUnknown;
@@ -540,8 +540,8 @@ void MachineLICM::HoistRegionPostRA() {
       unsigned Reg = MO.getReg();
       if (!Reg)
         continue;
-      for (const uint16_t *AS = TRI->getOverlaps(Reg); *AS; ++AS)
-        TermRegs.set(*AS);
+      for (MCRegAliasIterator AI(Reg, TRI, true); AI.isValid(); ++AI)
+        TermRegs.set(*AI);
     }
   }
 
@@ -584,7 +584,7 @@ void MachineLICM::HoistRegionPostRA() {
 /// AddToLiveIns - Add register 'Reg' to the livein sets of BBs in the current
 /// loop, and make sure it is not killed by any instructions in the loop.
 void MachineLICM::AddToLiveIns(unsigned Reg) {
-  const std::vector<MachineBasicBlock*> Blocks = CurLoop->getBlocks();
+  const std::vector<MachineBasicBlock *> &Blocks = CurLoop->getBlocks();
   for (unsigned i = 0, e = Blocks.size(); i != e; ++i) {
     MachineBasicBlock *BB = Blocks[i];
     if (!BB->isLiveIn(Reg))
@@ -780,7 +780,7 @@ MachineLICM::getRegisterClassIDAndCost(const MachineInstr *MI,
                                        unsigned Reg, unsigned OpIdx,
                                        unsigned &RCId, unsigned &RCCost) const {
   const TargetRegisterClass *RC = MRI->getRegClass(Reg);
-  EVT VT = *RC->vt_begin();
+  MVT VT = *RC->vt_begin();
   if (VT == MVT::Untyped) {
     RCId = RC->getID();
     RCCost = 1;
@@ -1084,7 +1084,7 @@ bool MachineLICM::CanCauseHighRegPressure(DenseMap<unsigned, int> &Cost,
       return true;
 
     for (unsigned i = BackTrace.size(); i != 0; --i) {
-      SmallVector<unsigned, 8> &RP = BackTrace[i-1];
+      SmallVectorImpl<unsigned> &RP = BackTrace[i-1];
       if (RP[RCId] + Cost >= Limit)
         return true;
     }
@@ -1130,7 +1130,7 @@ void MachineLICM::UpdateBackTraceRegPressure(const MachineInstr *MI) {
 
   // Update register pressure of blocks from loop header to current block.
   for (unsigned i = 0, e = BackTrace.size(); i != e; ++i) {
-    SmallVector<unsigned, 8> &RP = BackTrace[i];
+    SmallVectorImpl<unsigned> &RP = BackTrace[i];
     for (DenseMap<unsigned, int>::iterator CI = Cost.begin(), CE = Cost.end();
          CI != CE; ++CI) {
       unsigned RCId = CI->first;
@@ -1260,11 +1260,11 @@ MachineInstr *MachineLICM::ExtractHoistableLoad(MachineInstr *MI) {
   if (NewOpc == 0) return 0;
   const MCInstrDesc &MID = TII->get(NewOpc);
   if (MID.getNumDefs() != 1) return 0;
-  const TargetRegisterClass *RC = TII->getRegClass(MID, LoadRegIndex, TRI);
+  MachineFunction &MF = *MI->getParent()->getParent();
+  const TargetRegisterClass *RC = TII->getRegClass(MID, LoadRegIndex, TRI, MF);
   // Ok, we're unfolding. Create a temporary register and do the unfold.
   unsigned Reg = MRI->createVirtualRegister(RC);
 
-  MachineFunction &MF = *MI->getParent()->getParent();
   SmallVector<MachineInstr *, 2> NewMIs;
   bool Success =
     TII->unfoldMemoryOperand(MF, MI, Reg,

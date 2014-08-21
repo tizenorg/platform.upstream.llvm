@@ -9,15 +9,15 @@ entry:
 	ret float %0
 }
 
-; VFP2: test:
-; VFP2: 	vdiv.f32	s0, s1, s0
+; VFP2-LABEL: test:
+; VFP2: 	vdiv.f32	s{{.}}, s{{.}}, s{{.}}
 
-; NFP1: test:
-; NFP1: 	vdiv.f32	s0, s1, s0
-; NFP0: test:
-; NFP0: 	vdiv.f32	s0, s1, s0
+; NFP1-LABEL: test:
+; NFP1: 	vdiv.f32	s{{.}}, s{{.}}, s{{.}}
+; NFP0-LABEL: test:
+; NFP0: 	vdiv.f32	s{{.}}, s{{.}}, s{{.}}
 
-; CORTEXA8: test:
-; CORTEXA8: 	vdiv.f32	s0, s1, s0
-; CORTEXA9: test:
+; CORTEXA8-LABEL: test:
+; CORTEXA8: 	vdiv.f32	s{{.}}, s{{.}}, s{{.}}
+; CORTEXA9-LABEL: test:
 ; CORTEXA9: 	vdiv.f32	s{{.}}, s{{.}}, s{{.}}

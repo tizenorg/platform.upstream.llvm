@@ -11,7 +11,7 @@
 // structure and branch probability estimates.
 //
 // The pass strives to preserve the structure of the CFG (that is, retain
-// a topological ordering of basic blocks) in the absense of a *strong* signal
+// a topological ordering of basic blocks) in the absence of a *strong* signal
 // to the contrary from probabilities. However, within the CFG structure, it
 // attempts to choose an ordering which favors placing more likely sequences of
 // blocks adjacent to each other.
@@ -26,6 +26,11 @@
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "block-placement2"
+#include "llvm/CodeGen/Passes.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineBlockFrequencyInfo.h"
 #include "llvm/CodeGen/MachineBranchProbabilityInfo.h"
@@ -33,13 +38,9 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
-#include "llvm/CodeGen/Passes.h"
 #include "llvm/Support/Allocator.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/Statistic.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetLowering.h"
 #include <algorithm>
@@ -52,6 +53,11 @@ STATISTIC(CondBranchTakenFreq,
 STATISTIC(UncondBranchTakenFreq,
           "Potential frequency of taking unconditional branches");
 
+static cl::opt<unsigned> AlignAllBlock("align-all-blocks",
+                                       cl::desc("Force the alignment of all "
+                                                "blocks in the function."),
+                                       cl::init(0), cl::Hidden);
+
 namespace {
 class BlockChain;
 /// \brief Type for our function-wide basic block -> block chain mapping.
@@ -63,17 +69,13 @@ namespace {
 ///
 /// This is the datastructure representing a chain of consecutive blocks that
 /// are profitable to layout together in order to maximize fallthrough
-/// probabilities. We also can use a block chain to represent a sequence of
-/// basic blocks which have some external (correctness) requirement for
-/// sequential layout.
+/// probabilities and code locality. We also can use a block chain to represent
+/// a sequence of basic blocks which have some external (correctness)
+/// requirement for sequential layout.
 ///
-/// Eventually, the block chains will form a directed graph over the function.
-/// We provide an SCC-supporting-iterator in order to quicky build and walk the
-/// SCCs of block chains within a function.
-///
-/// The block chains also have support for calculating and caching probability
-/// information related to the chain itself versus other chains. This is used
-/// for ranking during the final layout of block chains.
+/// Chains can be built around a single basic block and can be merged to grow
+/// them. They participate in a block-to-chain mapping, which is updated
+/// automatically as chains are merged together.
 class BlockChain {
   /// \brief The sequence of blocks belonging to this chain.
   ///
@@ -175,14 +177,15 @@ class MachineBlockPlacement : public MachineFunctionPass {
   const TargetInstrInfo *TII;
 
   /// \brief A handle to the target's lowering info.
-  const TargetLowering *TLI;
+  const TargetLoweringBase *TLI;
 
   /// \brief Allocator and owner of BlockChain structures.
   ///
-  /// We build BlockChains lazily by merging together high probability BB
-  /// sequences acording to the "Algo2" in the paper mentioned at the top of
-  /// the file. To reduce malloc traffic, we allocate them using this slab-like
-  /// allocator, and destroy them after the pass completes.
+  /// We build BlockChains lazily while processing the loop structure of
+  /// a function. To reduce malloc traffic, we allocate them using this
+  /// slab-like allocator, and destroy them after the pass completes. An
+  /// important guarantee is that this allocator produces stable pointers to
+  /// the chains.
   SpecificBumpPtrAllocator<BlockChain> ChainAllocator;
 
   /// \brief Function wide BasicBlock to BlockChain mapping.
@@ -329,7 +332,7 @@ MachineBasicBlock *MachineBlockPlacement::selectBestSuccessor(
   // the MBPI analysis, we manually compute probabilities using the edge
   // weights. This is suboptimal as it means that the somewhat subtle
   // definition of edge weight semantics is encoded here as well. We should
-  // improve the MBPI interface to effeciently support query patterns such as
+  // improve the MBPI interface to efficiently support query patterns such as
   // this.
   uint32_t BestWeight = 0;
   uint32_t WeightScale = 0;
@@ -503,11 +506,10 @@ void MachineBlockPlacement::buildChain(
     assert(BB);
     assert(BlockToChain[BB] == &Chain);
     assert(*llvm::prior(Chain.end()) == BB);
-    MachineBasicBlock *BestSucc = 0;
 
     // Look for the best viable successor if there is one to place immediately
     // after this block.
-    BestSucc = selectBestSuccessor(BB, Chain, BlockFilter);
+    MachineBasicBlock *BestSucc = selectBestSuccessor(BB, Chain, BlockFilter);
 
     // If an immediate successor isn't available, look for the best viable
     // block among those we've identified as not violating the loop's CFG at
@@ -988,8 +990,46 @@ void MachineBlockPlacement::buildCFGChains(MachineFunction &F) {
     // boiler plate.
     Cond.clear();
     MachineBasicBlock *TBB = 0, *FBB = 0; // For AnalyzeBranch.
-    if (!TII->AnalyzeBranch(*PrevBB, TBB, FBB, Cond))
-      PrevBB->updateTerminator();
+    if (!TII->AnalyzeBranch(*PrevBB, TBB, FBB, Cond)) {
+      // The "PrevBB" is not yet updated to reflect current code layout, so,
+      //   o. it may fall-through to a block without explict "goto" instruction
+      //      before layout, and no longer fall-through it after layout; or 
+      //   o. just opposite.
+      // 
+      // AnalyzeBranch() may return erroneous value for FBB when these two
+      // situations take place. For the first scenario FBB is mistakenly set
+      // NULL; for the 2nd scenario, the FBB, which is expected to be NULL,
+      // is mistakenly pointing to "*BI".
+      //
+      bool needUpdateBr = true;
+      if (!Cond.empty() && (!FBB || FBB == *BI)) {
+        PrevBB->updateTerminator();
+        needUpdateBr = false;
+        Cond.clear();
+        TBB = FBB = 0;
+        if (TII->AnalyzeBranch(*PrevBB, TBB, FBB, Cond)) {
+          // FIXME: This should never take place.
+          TBB = FBB = 0;
+        }
+      }
+
+      // If PrevBB has a two-way branch, try to re-order the branches
+      // such that we branch to the successor with higher weight first.
+      if (TBB && !Cond.empty() && FBB &&
+          MBPI->getEdgeWeight(PrevBB, FBB) > MBPI->getEdgeWeight(PrevBB, TBB) &&
+          !TII->ReverseBranchCondition(Cond)) {
+        DEBUG(dbgs() << "Reverse order of the two branches: "
+                     << getBlockName(PrevBB) << "\n");
+        DEBUG(dbgs() << "    Edge weight: " << MBPI->getEdgeWeight(PrevBB, FBB)
+                     << " vs " << MBPI->getEdgeWeight(PrevBB, TBB) << "\n");
+        DebugLoc dl;  // FIXME: this is nowhere
+        TII->RemoveBranch(*PrevBB);
+        TII->InsertBranch(*PrevBB, FBB, TBB, Cond, dl);
+        needUpdateBr = true;
+      }
+      if (needUpdateBr)
+        PrevBB->updateTerminator();
+    }
   }
 
   // Fixup the last block.
@@ -1000,29 +1040,64 @@ void MachineBlockPlacement::buildCFGChains(MachineFunction &F) {
 
   // Walk through the backedges of the function now that we have fully laid out
   // the basic blocks and align the destination of each backedge. We don't rely
-  // on the loop info here so that we can align backedges in unnatural CFGs and
-  // backedges that were introduced purely because of the loop rotations done
-  // during this layout pass.
-  // FIXME: This isn't quite right, we shouldn't align backedges that result
-  // from blocks being sunken below the exit block for the function.
-  if (F.getFunction()->hasFnAttr(Attribute::OptimizeForSize))
+  // exclusively on the loop info here so that we can align backedges in
+  // unnatural CFGs and backedges that were introduced purely because of the
+  // loop rotations done during this layout pass.
+  if (F.getFunction()->getAttributes().
+        hasAttribute(AttributeSet::FunctionIndex, Attribute::OptimizeForSize))
     return;
   unsigned Align = TLI->getPrefLoopAlignment();
   if (!Align)
     return;  // Don't care about loop alignment.
+  if (FunctionChain.begin() == FunctionChain.end())
+    return;  // Empty chain.
 
-  SmallPtrSet<MachineBasicBlock *, 16> PreviousBlocks;
-  for (BlockChain::iterator BI = FunctionChain.begin(),
+  const BranchProbability ColdProb(1, 5); // 20%
+  BlockFrequency EntryFreq = MBFI->getBlockFreq(F.begin());
+  BlockFrequency WeightedEntryFreq = EntryFreq * ColdProb;
+  for (BlockChain::iterator BI = llvm::next(FunctionChain.begin()),
                             BE = FunctionChain.end();
        BI != BE; ++BI) {
-    PreviousBlocks.insert(*BI);
-    // Set alignment on the destination of all the back edges in the new
-    // ordering.
-    for (MachineBasicBlock::succ_iterator SI = (*BI)->succ_begin(),
-                                          SE = (*BI)->succ_end();
-         SI != SE; ++SI)
-      if (PreviousBlocks.count(*SI))
-        (*SI)->setAlignment(Align);
+    // Don't align non-looping basic blocks. These are unlikely to execute
+    // enough times to matter in practice. Note that we'll still handle
+    // unnatural CFGs inside of a natural outer loop (the common case) and
+    // rotated loops.
+    MachineLoop *L = MLI->getLoopFor(*BI);
+    if (!L)
+      continue;
+
+    // If the block is cold relative to the function entry don't waste space
+    // aligning it.
+    BlockFrequency Freq = MBFI->getBlockFreq(*BI);
+    if (Freq < WeightedEntryFreq)
+      continue;
+
+    // If the block is cold relative to its loop header, don't align it
+    // regardless of what edges into the block exist.
+    MachineBasicBlock *LoopHeader = L->getHeader();
+    BlockFrequency LoopHeaderFreq = MBFI->getBlockFreq(LoopHeader);
+    if (Freq < (LoopHeaderFreq * ColdProb))
+      continue;
+
+    // Check for the existence of a non-layout predecessor which would benefit
+    // from aligning this block.
+    MachineBasicBlock *LayoutPred = *llvm::prior(BI);
+
+    // Force alignment if all the predecessors are jumps. We already checked
+    // that the block isn't cold above.
+    if (!LayoutPred->isSuccessor(*BI)) {
+      (*BI)->setAlignment(Align);
+      continue;
+    }
+
+    // Align this block if the layout predecessor's edge into this block is
+    // cold relative to the block. When this is true, other predecessors make up
+    // all of the hot entries into the block and thus alignment is likely to be
+    // important.
+    BranchProbability LayoutProb = MBPI->getEdgeProbability(LayoutPred, *BI);
+    BlockFrequency LayoutEdgeFreq = MBFI->getBlockFreq(LayoutPred) * LayoutProb;
+    if (LayoutEdgeFreq <= (Freq * ColdProb))
+      (*BI)->setAlignment(Align);
   }
 }
 
@@ -1043,6 +1118,12 @@ bool MachineBlockPlacement::runOnMachineFunction(MachineFunction &F) {
   BlockToChain.clear();
   ChainAllocator.DestroyAll();
 
+  if (AlignAllBlock)
+    // Align all of the blocks in the function to a specific alignment.
+    for (MachineFunction::iterator FI = F.begin(), FE = F.end();
+         FI != FE; ++FI)
+      FI->setAlignment(AlignAllBlock);
+
   // We always return true as we have no way to track whether the final order
   // differs from the original order.
   return true;
@@ -1053,7 +1134,7 @@ namespace {
 ///
 /// A separate pass to compute interesting statistics for evaluating block
 /// placement. This is separate from the actual placement pass so that they can
-/// be computed in the absense of any placement transformations or when using
+/// be computed in the absence of any placement transformations or when using
 /// alternative placement strategies.
 class MachineBlockPlacementStats : public MachineFunctionPass {
   /// \brief A handle to the branch probability pass.

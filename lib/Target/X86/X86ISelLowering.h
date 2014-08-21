@@ -15,14 +15,14 @@
 #ifndef X86ISELLOWERING_H
 #define X86ISELLOWERING_H
 
-#include "X86Subtarget.h"
-#include "X86RegisterInfo.h"
 #include "X86MachineFunctionInfo.h"
-#include "llvm/Target/TargetLowering.h"
-#include "llvm/Target/TargetOptions.h"
+#include "X86RegisterInfo.h"
+#include "X86Subtarget.h"
+#include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/FastISel.h"
 #include "llvm/CodeGen/SelectionDAG.h"
-#include "llvm/CodeGen/CallingConvLower.h"
+#include "llvm/Target/TargetLowering.h"
+#include "llvm/Target/TargetOptions.h"
 
 namespace llvm {
   namespace X86ISD {
@@ -52,6 +52,10 @@ namespace llvm {
       /// FXOR - Bitwise logical XOR of floating point values. This corresponds
       /// to X86::XORPS or X86::XORPD.
       FXOR,
+
+      /// FANDN - Bitwise logical ANDNOT of floating point values. This
+      /// corresponds to X86::ANDNPS or X86::ANDNPD.
+      FANDN,
 
       /// FSRL - Bitwise logical right shift of floating point values. These
       /// corresponds to X86::PSRLDQ.
@@ -137,14 +141,14 @@ namespace llvm {
       /// relative displacements.
       WrapperRIP,
 
-      /// MOVQ2DQ - Copies a 64-bit value from an MMX vector to the low word
-      /// of an XMM vector, with the high word zero filled.
-      MOVQ2DQ,
-
       /// MOVDQ2Q - Copies a 64-bit value from the low word of an XMM vector
       /// to an MMX vector.  If you think this is too close to the previous
       /// mnemonic, so do I; blame Intel.
       MOVDQ2Q,
+
+      /// MMX_MOVD2W - Copies a 32-bit value from the low word of a MMX
+      /// vector to a GPR.
+      MMX_MOVD2W,
 
       /// PEXTRB - Extract an 8-bit value from a vector and zero extend it to
       /// i32, corresponds to X86::PEXTRB.
@@ -175,13 +179,14 @@ namespace llvm {
       /// PSIGN - Copy integer sign.
       PSIGN,
 
-      /// BLENDV - Blend where the selector is an XMM.
+      /// BLENDV - Blend where the selector is a register.
       BLENDV,
 
-      /// BLENDxx - Blend where the selector is an immediate.
-      BLENDPW,
-      BLENDPS,
-      BLENDPD,
+      /// BLENDI - Blend where the selector is an immediate.
+      BLENDI,
+
+      // SUBUS - Integer sub with unsigned saturation.
+      SUBUS,
 
       /// HADD - Integer horizontal add.
       HADD,
@@ -195,9 +200,18 @@ namespace llvm {
       /// FHSUB - Floating point horizontal sub.
       FHSUB,
 
+      /// UMAX, UMIN - Unsigned integer max and min.
+      UMAX, UMIN,
+
+      /// SMAX, SMIN - Signed integer max and min.
+      SMAX, SMIN,
+
       /// FMAX, FMIN - Floating point max and min.
       ///
       FMAX, FMIN,
+
+      /// FMAXC, FMINC - Commutative FMIN and FMAX.
+      FMAXC, FMINC,
 
       /// FRSQRT, FRCP - Floating point reciprocal-sqrt and reciprocal
       /// approximation.  Note that these typically require refinement
@@ -207,6 +221,10 @@ namespace llvm {
       // TLSADDR - Thread Local Storage.
       TLSADDR,
 
+      // TLSBASEADDR - Thread Local Storage. A call to get the start address
+      // of the TLS block for the current module.
+      TLSBASEADDR,
+
       // TLSCALL - Thread Local Storage.  When calling to an OS provided
       // thunk at the address from an earlier relocation.
       TLSCALL,
@@ -214,11 +232,14 @@ namespace llvm {
       // EH_RETURN - Exception Handling helpers.
       EH_RETURN,
 
-      /// TC_RETURN - Tail call return.
-      ///   operand #0 chain
-      ///   operand #1 callee (register or absolute)
-      ///   operand #2 stack adjustment
-      ///   operand #3 optional in flag
+      // EH_SJLJ_SETJMP - SjLj exception handling setjmp.
+      EH_SJLJ_SETJMP,
+
+      // EH_SJLJ_LONGJMP - SjLj exception handling longjmp.
+      EH_SJLJ_LONGJMP,
+
+      /// TC_RETURN - Tail call return. See X86TargetLowering::LowerCall for
+      /// the list of operands.
       TC_RETURN,
 
       // VZEXT_MOVL - Vector move low and zero extend.
@@ -226,6 +247,24 @@ namespace llvm {
 
       // VSEXT_MOVL - Vector move low and sign extend.
       VSEXT_MOVL,
+
+      // VZEXT - Vector integer zero-extend.
+      VZEXT,
+
+      // VSEXT - Vector integer signed-extend.
+      VSEXT,
+
+      // VTRUNC - Vector integer truncate.
+      VTRUNC,
+
+      // VTRUNC - Vector integer truncate with mask.
+      VTRUNCM,
+
+      // VFPEXT - Vector FP extend.
+      VFPEXT,
+
+      // VFPROUND - Vector FP round.
+      VFPROUND,
 
       // VSHL, VSRL - 128-bit vector logical left / right shift
       VSHLDQ, VSRLDQ,
@@ -241,33 +280,44 @@ namespace llvm {
 
       // PCMP* - Vector integer comparisons.
       PCMPEQ, PCMPGT,
+      // PCMP*M - Vector integer comparisons, the result is in a mask vector.
+      PCMPEQM, PCMPGTM,
 
-      // VPCOM, VPCOMU - XOP Vector integer comparisons.
-      VPCOM, VPCOMU,
+      /// CMPM, CMPMU - Vector comparison generating mask bits for fp and
+      /// integer signed and unsigned data types.
+      CMPM,
+      CMPMU,
 
       // ADD, SUB, SMUL, etc. - Arithmetic operations with FLAGS results.
       ADD, SUB, ADC, SBB, SMUL,
       INC, DEC, OR, XOR, AND,
 
-      ANDN, // ANDN - Bitwise AND NOT with FLAGS results.
-
       BLSI,   // BLSI - Extract lowest set isolated bit
       BLSMSK, // BLSMSK - Get mask up to lowest set bit
       BLSR,   // BLSR - Reset lowest set bit
+      BZHI,   // BZHI - Zero high bits
+      BEXTR,  // BEXTR - Bit field extract
 
       UMUL, // LOW, HI, FLAGS = umul LHS, RHS
 
       // MUL_IMM - X86 specific multiply by immediate.
       MUL_IMM,
 
-      // PTEST - Vector bitwise comparisons
+      // PTEST - Vector bitwise comparisons.
       PTEST,
 
-      // TESTP - Vector packed fp sign bitwise comparisons
+      // TESTP - Vector packed fp sign bitwise comparisons.
       TESTP,
 
+      // TESTM - Vector "test" in AVX-512, the result is in a mask vector.
+      TESTM,
+
+      // OR/AND test for masks
+      KORTEST,
+      KTEST,
+
       // Several flavors of instructions with vector shuffle behaviors.
-      PALIGN,
+      PALIGNR,
       PSHUFD,
       PSHUFHW,
       PSHUFLW,
@@ -286,12 +336,24 @@ namespace llvm {
       UNPCKH,
       VPERMILP,
       VPERMV,
+      VPERMV3,
       VPERMI,
       VPERM2X128,
       VBROADCAST,
+      // masked broadcast
+      VBROADCASTM,
+      VINSERT,
 
       // PMULUDQ - Vector multiply packed unsigned doubleword integers
       PMULUDQ,
+
+      // FMA nodes
+      FMADD,
+      FNMADD,
+      FMSUB,
+      FNMSUB,
+      FMADDSUB,
+      FMSUBADD,
 
       // VASTART_SAVE_XMM_REGS - Save xmm argument registers to the stack,
       // according to %al. An operator is needed so that this can be expanded
@@ -315,6 +377,26 @@ namespace llvm {
       SFENCE,
       LFENCE,
 
+      // FNSTSW16r - Store FP status word into i16 register.
+      FNSTSW16r,
+
+      // SAHF - Store contents of %ah into %eflags.
+      SAHF,
+
+      // RDRAND - Get a random integer and indicate whether it is valid in CF.
+      RDRAND,
+
+      // RDSEED - Get a NIST SP800-90B & C compliant random integer and
+      // indicate whether it is valid in CF.
+      RDSEED,
+
+      // PCMP*STRI
+      PCMPISTRI,
+      PCMPESTRI,
+
+      // XTEST - Test if in transactional execution.
+      XTEST,
+
       // ATOMADD64_DAG, ATOMSUB64_DAG, ATOMOR64_DAG, ATOMAND64_DAG,
       // ATOMXOR64_DAG, ATOMNAND64_DAG, ATOMSWAP64_DAG -
       // Atomic 64-bit binary operations.
@@ -324,6 +406,10 @@ namespace llvm {
       ATOMXOR64_DAG,
       ATOMAND64_DAG,
       ATOMNAND64_DAG,
+      ATOMMAX64_DAG,
+      ATOMMIN64_DAG,
+      ATOMUMAX64_DAG,
+      ATOMUMIN64_DAG,
       ATOMSWAP64_DAG,
 
       // LCMPXCHG_DAG, LCMPXCHG8_DAG, LCMPXCHG16_DAG - Compare and swap.
@@ -378,25 +464,45 @@ namespace llvm {
 
   /// Define some predicates that are used for node matching.
   namespace X86 {
-    /// isVEXTRACTF128Index - Return true if the specified
+    /// isVEXTRACT128Index - Return true if the specified
     /// EXTRACT_SUBVECTOR operand specifies a vector extract that is
-    /// suitable for input to VEXTRACTF128.
-    bool isVEXTRACTF128Index(SDNode *N);
+    /// suitable for input to VEXTRACTF128, VEXTRACTI128 instructions.
+    bool isVEXTRACT128Index(SDNode *N);
 
-    /// isVINSERTF128Index - Return true if the specified
+    /// isVINSERT128Index - Return true if the specified
     /// INSERT_SUBVECTOR operand specifies a subvector insert that is
-    /// suitable for input to VINSERTF128.
-    bool isVINSERTF128Index(SDNode *N);
+    /// suitable for input to VINSERTF128, VINSERTI128 instructions.
+    bool isVINSERT128Index(SDNode *N);
 
-    /// getExtractVEXTRACTF128Immediate - Return the appropriate
+    /// isVEXTRACT256Index - Return true if the specified
+    /// EXTRACT_SUBVECTOR operand specifies a vector extract that is
+    /// suitable for input to VEXTRACTF64X4, VEXTRACTI64X4 instructions.
+    bool isVEXTRACT256Index(SDNode *N);
+
+    /// isVINSERT256Index - Return true if the specified
+    /// INSERT_SUBVECTOR operand specifies a subvector insert that is
+    /// suitable for input to VINSERTF64X4, VINSERTI64X4 instructions.
+    bool isVINSERT256Index(SDNode *N);
+
+    /// getExtractVEXTRACT128Immediate - Return the appropriate
     /// immediate to extract the specified EXTRACT_SUBVECTOR index
-    /// with VEXTRACTF128 instructions.
-    unsigned getExtractVEXTRACTF128Immediate(SDNode *N);
+    /// with VEXTRACTF128, VEXTRACTI128 instructions.
+    unsigned getExtractVEXTRACT128Immediate(SDNode *N);
 
-    /// getInsertVINSERTF128Immediate - Return the appropriate
+    /// getInsertVINSERT128Immediate - Return the appropriate
     /// immediate to insert at the specified INSERT_SUBVECTOR index
-    /// with VINSERTF128 instructions.
-    unsigned getInsertVINSERTF128Immediate(SDNode *N);
+    /// with VINSERTF128, VINSERT128 instructions.
+    unsigned getInsertVINSERT128Immediate(SDNode *N);
+
+    /// getExtractVEXTRACT256Immediate - Return the appropriate
+    /// immediate to extract the specified EXTRACT_SUBVECTOR index
+    /// with VEXTRACTF64X4, VEXTRACTI64x4 instructions.
+    unsigned getExtractVEXTRACT256Immediate(SDNode *N);
+
+    /// getInsertVINSERT256Immediate - Return the appropriate
+    /// immediate to insert at the specified INSERT_SUBVECTOR index
+    /// with VINSERTF64x4, VINSERTI64x4 instructions.
+    unsigned getInsertVINSERT256Immediate(SDNode *N);
 
     /// isZeroNode - Returns true if Elt is a constant zero or a floating point
     /// constant +0.0.
@@ -422,7 +528,7 @@ namespace llvm {
 
     virtual unsigned getJumpTableEncoding() const;
 
-    virtual MVT getShiftAmountTy(EVT LHSTy) const { return MVT::i8; }
+    virtual MVT getScalarShiftAmountTy(EVT LHSTy) const { return MVT::i8; }
 
     virtual const MCExpr *
     LowerCustomJumpTableEntry(const MachineJumpTableInfo *MJTI,
@@ -437,10 +543,6 @@ namespace llvm {
     getPICJumpTableRelocBaseExpr(const MachineFunction *MF,
                                  unsigned JTI, MCContext &Ctx) const;
 
-    /// getStackPtrReg - Return the stack pointer register we are using: either
-    /// ESP or RSP.
-    unsigned getStackPtrReg() const { return X86StackPtr; }
-
     /// getByValTypeAlignment - Return the desired alignment for ByVal aggregate
     /// function arguments in the caller parameter area. For X86, aggregates
     /// that contains are placed at 16-byte boundaries while the rest are at
@@ -452,23 +554,29 @@ namespace llvm {
     /// lowering. If DstAlign is zero that means it's safe to destination
     /// alignment can satisfy any constraint. Similarly if SrcAlign is zero it
     /// means there isn't a need to check it against alignment requirement,
-    /// probably because the source does not need to be loaded. If
-    /// 'IsZeroVal' is true, that means it's safe to return a
-    /// non-scalar-integer type, e.g. empty string source, constant, or loaded
-    /// from memory. 'MemcpyStrSrc' indicates whether the memcpy source is
-    /// constant so it does not need to be loaded.
+    /// probably because the source does not need to be loaded. If 'IsMemset' is
+    /// true, that means it's expanding a memset. If 'ZeroMemset' is true, that
+    /// means it's a memset of zero. 'MemcpyStrSrc' indicates whether the memcpy
+    /// source is constant so it does not need to be loaded.
     /// It returns EVT::Other if the type should be determined using generic
     /// target-independent logic.
     virtual EVT
     getOptimalMemOpType(uint64_t Size, unsigned DstAlign, unsigned SrcAlign,
-                        bool IsZeroVal, bool MemcpyStrSrc,
+                        bool IsMemset, bool ZeroMemset, bool MemcpyStrSrc,
                         MachineFunction &MF) const;
 
+    /// isSafeMemOpType - Returns true if it's safe to use load / store of the
+    /// specified type to expand memcpy / memset inline. This is mostly true
+    /// for all types except for some special cases. For example, on X86
+    /// targets without SSE2 f64 load / store are done with fldl / fstpl which
+    /// also does type conversion. Note the specified type doesn't have to be
+    /// legal as the hook is used before type legalization.
+    virtual bool isSafeMemOpType(MVT VT) const;
+
     /// allowsUnalignedMemoryAccesses - Returns true if the target allows
-    /// unaligned memory accesses. of the specified type.
-    virtual bool allowsUnalignedMemoryAccesses(EVT VT) const {
-      return true;
-    }
+    /// unaligned memory accesses. of the specified type. Returns whether it
+    /// is "fast" by reference in the second argument.
+    virtual bool allowsUnalignedMemoryAccesses(EVT VT, bool *Fast) const;
 
     /// LowerOperation - Provide custom lowering hooks for some operations.
     ///
@@ -505,7 +613,7 @@ namespace llvm {
     virtual const char *getTargetNodeName(unsigned Opcode) const;
 
     /// getSetCCResultType - Return the value type to use for ISD::SETCC.
-    virtual EVT getSetCCResultType(EVT VT) const;
+    virtual EVT getSetCCResultType(LLVMContext &Context, EVT VT) const;
 
     /// computeMaskedBitsForTargetNode - Determine which of the bits specified
     /// in Mask are known to be either zero or one and return them in the
@@ -552,17 +660,31 @@ namespace llvm {
     /// error, this returns a register number of 0.
     std::pair<unsigned, const TargetRegisterClass*>
       getRegForInlineAsmConstraint(const std::string &Constraint,
-                                   EVT VT) const;
+                                   MVT VT) const;
 
     /// isLegalAddressingMode - Return true if the addressing mode represented
     /// by AM is legal for this target, for a load/store of the specified type.
     virtual bool isLegalAddressingMode(const AddrMode &AM, Type *Ty)const;
+
+    /// isLegalICmpImmediate - Return true if the specified immediate is legal
+    /// icmp immediate, that is the target has icmp instructions which can
+    /// compare a register against the immediate without having to materialize
+    /// the immediate into a register.
+    virtual bool isLegalICmpImmediate(int64_t Imm) const;
+
+    /// isLegalAddImmediate - Return true if the specified immediate is legal
+    /// add immediate, that is the target has add instructions which can
+    /// add a register and the immediate without having to materialize
+    /// the immediate into a register.
+    virtual bool isLegalAddImmediate(int64_t Imm) const;
 
     /// isTruncateFree - Return true if it's free to truncate a value of
     /// type Ty1 to type Ty2. e.g. On x86 it's free to truncate a i32 value in
     /// register EAX to i16 by referencing its sub-register AX.
     virtual bool isTruncateFree(Type *Ty1, Type *Ty2) const;
     virtual bool isTruncateFree(EVT VT1, EVT VT2) const;
+
+    virtual bool allowTruncateForTailCall(Type *Ty1, Type *Ty2) const;
 
     /// isZExtFree - Return true if any actual instruction that defines a
     /// value of type Ty1 implicit zero-extends the value to Ty2 in the result
@@ -574,6 +696,13 @@ namespace llvm {
     /// result out to 64 bits.
     virtual bool isZExtFree(Type *Ty1, Type *Ty2) const;
     virtual bool isZExtFree(EVT VT1, EVT VT2) const;
+    virtual bool isZExtFree(SDValue Val, EVT VT2) const;
+
+    /// isFMAFasterThanFMulAndFAdd - Return true if an FMA operation is faster
+    /// than a pair of fmul and fadd instructions. fmuladd intrinsics will be
+    /// expanded to FMAs when this method returns true, otherwise fmuladd is
+    /// expanded to fmul + fadd.
+    virtual bool isFMAFasterThanFMulAndFAdd(EVT VT) const;
 
     /// isNarrowingProfitable - Return true if it's profitable to narrow
     /// operations of type VT1 to VT2. e.g. on x86, it's profitable to narrow
@@ -634,7 +763,8 @@ namespace llvm {
 
     /// createFastISel - This method returns a target specific FastISel object,
     /// or null if the target does not support "fast" ISel.
-    virtual FastISel *createFastISel(FunctionLoweringInfo &funcInfo) const;
+    virtual FastISel *createFastISel(FunctionLoweringInfo &funcInfo,
+                                     const TargetLibraryInfo *libInfo) const;
 
     /// getStackCookieLocation - Return true if the target stores stack
     /// protector cookies at a fixed offset in some non-standard address
@@ -645,19 +775,24 @@ namespace llvm {
     SDValue BuildFILD(SDValue Op, EVT SrcVT, SDValue Chain, SDValue StackSlot,
                       SelectionDAG &DAG) const;
 
+    virtual bool isNoopAddrSpaceCast(unsigned SrcAS, unsigned DestAS) const LLVM_OVERRIDE;
+
+    /// \brief Reset the operation actions based on target options.
+    virtual void resetOperationActions();
+
   protected:
     std::pair<const TargetRegisterClass*, uint8_t>
-    findRepresentativeClass(EVT VT) const;
+    findRepresentativeClass(MVT VT) const;
 
   private:
     /// Subtarget - Keep a pointer to the X86Subtarget around so that we can
     /// make the right decision when generating code for different targets.
     const X86Subtarget *Subtarget;
-    const X86RegisterInfo *RegInfo;
-    const TargetData *TD;
+    const DataLayout *TD;
 
-    /// X86StackPtr - X86 physical register used as stack ptr.
-    unsigned X86StackPtr;
+    /// Used to store the TargetOptions so that we don't waste time resetting
+    /// the operation actions unless we have to.
+    TargetOptions TO;
 
     /// X86ScalarSSEf32, X86ScalarSSEf64 - Select between SSE or x87
     /// floating point ops.
@@ -678,16 +813,16 @@ namespace llvm {
     SDValue LowerCallResult(SDValue Chain, SDValue InFlag,
                             CallingConv::ID CallConv, bool isVarArg,
                             const SmallVectorImpl<ISD::InputArg> &Ins,
-                            DebugLoc dl, SelectionDAG &DAG,
+                            SDLoc dl, SelectionDAG &DAG,
                             SmallVectorImpl<SDValue> &InVals) const;
     SDValue LowerMemArgument(SDValue Chain,
                              CallingConv::ID CallConv,
                              const SmallVectorImpl<ISD::InputArg> &ArgInfo,
-                             DebugLoc dl, SelectionDAG &DAG,
+                             SDLoc dl, SelectionDAG &DAG,
                              const CCValAssign &VA,  MachineFrameInfo *MFI,
                               unsigned i) const;
     SDValue LowerMemOpCallTo(SDValue Chain, SDValue StackPtr, SDValue Arg,
-                             DebugLoc dl, SelectionDAG &DAG,
+                             SDLoc dl, SelectionDAG &DAG,
                              const CCValAssign &VA,
                              ISD::ArgFlagsTy Flags) const;
 
@@ -701,6 +836,7 @@ namespace llvm {
                                            bool isVarArg,
                                            bool isCalleeStructRet,
                                            bool isCallerStructRet,
+                                           Type *RetTy,
                                     const SmallVectorImpl<ISD::OutputArg> &Outs,
                                     const SmallVectorImpl<SDValue> &OutVals,
                                     const SmallVectorImpl<ISD::InputArg> &Ins,
@@ -708,7 +844,7 @@ namespace llvm {
     bool IsCalleePop(bool isVarArg, CallingConv::ID CallConv) const;
     SDValue EmitTailCallLoadRetAddr(SelectionDAG &DAG, SDValue &OutRetAddr,
                                 SDValue Chain, bool IsTailCall, bool Is64Bit,
-                                int FPDiff, DebugLoc dl) const;
+                                int FPDiff, SDLoc dl) const;
 
     unsigned GetAlignedArgumentStackSize(unsigned StackSize,
                                          SelectionDAG &DAG) const;
@@ -717,41 +853,33 @@ namespace llvm {
                                                bool isSigned,
                                                bool isReplace) const;
 
-    SDValue LowerAsSplatVectorLoad(SDValue SrcOp, EVT VT, DebugLoc dl,
-                                   SelectionDAG &DAG) const;
     SDValue LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerCONCAT_VECTORS(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerBUILD_VECTORvXi1(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerVECTOR_SHUFFLE(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerEXTRACT_VECTOR_ELT(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerEXTRACT_VECTOR_ELT_SSE4(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerINSERT_VECTOR_ELT(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerINSERT_VECTOR_ELT_SSE4(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerSCALAR_TO_VECTOR(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerEXTRACT_SUBVECTOR(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerINSERT_SUBVECTOR(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerConstantPool(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerBlockAddress(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerGlobalAddress(const GlobalValue *GV, DebugLoc dl,
+    SDValue LowerGlobalAddress(const GlobalValue *GV, SDLoc dl,
                                int64_t Offset, SelectionDAG &DAG) const;
     SDValue LowerGlobalAddress(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerExternalSymbol(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerShiftParts(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerBITCAST(SDValue op, SelectionDAG &DAG) const;
     SDValue LowerSINT_TO_FP(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerUINT_TO_FP(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerUINT_TO_FP_i64(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerUINT_TO_FP_i32(SDValue Op, SelectionDAG &DAG) const;
+    SDValue lowerUINT_TO_FP_vec(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerTRUNCATE(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFP_TO_SINT(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFP_TO_UINT(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFABS(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFNEG(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFCOPYSIGN(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerFGETSIGN(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerToBT(SDValue And, ISD::CondCode CC,
-                      DebugLoc dl, SelectionDAG &DAG) const;
+                      SDLoc dl, SelectionDAG &DAG) const;
     SDValue LowerSETCC(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerVSETCC(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerSELECT(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerBRCOND(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerMEMSET(SDValue Op, SelectionDAG &DAG) const;
@@ -759,50 +887,24 @@ namespace llvm {
     SDValue LowerDYNAMIC_STACKALLOC(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerVASTART(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerVAARG(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerVACOPY(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerRETURNADDR(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFRAME_TO_ARGS_OFFSET(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerEH_RETURN(SDValue Op, SelectionDAG &DAG) const;
+    SDValue lowerEH_SJLJ_SETJMP(SDValue Op, SelectionDAG &DAG) const;
+    SDValue lowerEH_SJLJ_LONGJMP(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerINIT_TRAMPOLINE(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerADJUST_TRAMPOLINE(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFLT_ROUNDS_(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerCTLZ(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerCTLZ_ZERO_UNDEF(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerCTTZ(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerADD(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerSUB(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerMUL(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerShift(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerXALUO(SDValue Op, SelectionDAG &DAG) const;
-
-    SDValue LowerCMP_SWAP(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerLOAD_SUB(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerREADCYCLECOUNTER(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerMEMBARRIER(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerATOMIC_FENCE(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerSIGN_EXTEND_INREG(SDValue Op, SelectionDAG &DAG) const;
-    SDValue PerformTruncateCombine(SDNode* N, SelectionDAG &DAG, DAGCombinerInfo &DCI) const;
-
-    // Utility functions to help LowerVECTOR_SHUFFLE
-    SDValue LowerVECTOR_SHUFFLEv8i16(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerVectorBroadcast(SDValue &Op, SelectionDAG &DAG) const;
-    SDValue NormalizeVectorShuffle(SDValue Op, SelectionDAG &DAG) const;
 
     virtual SDValue
       LowerFormalArguments(SDValue Chain,
                            CallingConv::ID CallConv, bool isVarArg,
                            const SmallVectorImpl<ISD::InputArg> &Ins,
-                           DebugLoc dl, SelectionDAG &DAG,
+                           SDLoc dl, SelectionDAG &DAG,
                            SmallVectorImpl<SDValue> &InVals) const;
     virtual SDValue
-      LowerCall(SDValue Chain, SDValue Callee, CallingConv::ID CallConv,
-                bool isVarArg, bool doesNotRet, bool &isTailCall,
-                const SmallVectorImpl<ISD::OutputArg> &Outs,
-                const SmallVectorImpl<SDValue> &OutVals,
-                const SmallVectorImpl<ISD::InputArg> &Ins,
-                DebugLoc dl, SelectionDAG &DAG,
+      LowerCall(CallLoweringInfo &CLI,
                 SmallVectorImpl<SDValue> &InVals) const;
 
     virtual SDValue
@@ -810,70 +912,34 @@ namespace llvm {
                   CallingConv::ID CallConv, bool isVarArg,
                   const SmallVectorImpl<ISD::OutputArg> &Outs,
                   const SmallVectorImpl<SDValue> &OutVals,
-                  DebugLoc dl, SelectionDAG &DAG) const;
+                  SDLoc dl, SelectionDAG &DAG) const;
 
     virtual bool isUsedByReturnOnly(SDNode *N, SDValue &Chain) const;
 
     virtual bool mayBeEmittedAsTailCall(CallInst *CI) const;
 
-    virtual EVT
-    getTypeForExtArgOrReturn(LLVMContext &Context, EVT VT,
-                             ISD::NodeType ExtendKind) const;
+    virtual MVT
+    getTypeForExtArgOrReturn(MVT VT, ISD::NodeType ExtendKind) const;
 
     virtual bool
     CanLowerReturn(CallingConv::ID CallConv, MachineFunction &MF,
-		   bool isVarArg,
-		   const SmallVectorImpl<ISD::OutputArg> &Outs,
-		   LLVMContext &Context) const;
+                   bool isVarArg,
+                   const SmallVectorImpl<ISD::OutputArg> &Outs,
+                   LLVMContext &Context) const;
 
-    void ReplaceATOMIC_BINARY_64(SDNode *N, SmallVectorImpl<SDValue> &Results,
-                                 SelectionDAG &DAG, unsigned NewOp) const;
+    virtual const uint16_t *getScratchRegisters(CallingConv::ID CC) const;
 
-    /// Utility function to emit string processing sse4.2 instructions
-    /// that return in xmm0.
-    /// This takes the instruction to expand, the associated machine basic
-    /// block, the number of args, and whether or not the second arg is
-    /// in memory or not.
-    MachineBasicBlock *EmitPCMP(MachineInstr *BInstr, MachineBasicBlock *BB,
-                                unsigned argNum, bool inMem) const;
+    /// Utility function to emit atomic-load-arith operations (and, or, xor,
+    /// nand, max, min, umax, umin). It takes the corresponding instruction to
+    /// expand, the associated machine basic block, and the associated X86
+    /// opcodes for reg/reg.
+    MachineBasicBlock *EmitAtomicLoadArith(MachineInstr *MI,
+                                           MachineBasicBlock *MBB) const;
 
-    /// Utility functions to emit monitor and mwait instructions. These
-    /// need to make sure that the arguments to the intrinsic are in the
-    /// correct registers.
-    MachineBasicBlock *EmitMonitor(MachineInstr *MI,
-                                   MachineBasicBlock *BB) const;
-    MachineBasicBlock *EmitMwait(MachineInstr *MI, MachineBasicBlock *BB) const;
-
-    /// Utility function to emit atomic bitwise operations (and, or, xor).
-    /// It takes the bitwise instruction to expand, the associated machine basic
-    /// block, and the associated X86 opcodes for reg/reg and reg/imm.
-    MachineBasicBlock *EmitAtomicBitwiseWithCustomInserter(
-                                                    MachineInstr *BInstr,
-                                                    MachineBasicBlock *BB,
-                                                    unsigned regOpc,
-                                                    unsigned immOpc,
-                                                    unsigned loadOpc,
-                                                    unsigned cxchgOpc,
-                                                    unsigned notOpc,
-                                                    unsigned EAXreg,
-                                              const TargetRegisterClass *RC,
-                                                    bool Invert = false) const;
-
-    MachineBasicBlock *EmitAtomicBit6432WithCustomInserter(
-                                                    MachineInstr *BInstr,
-                                                    MachineBasicBlock *BB,
-                                                    unsigned regOpcL,
-                                                    unsigned regOpcH,
-                                                    unsigned immOpcL,
-                                                    unsigned immOpcH,
-                                                    bool Invert = false) const;
-
-    /// Utility function to emit atomic min and max.  It takes the min/max
-    /// instruction to expand, the associated basic block, and the associated
-    /// cmov opcode for moving the min or max value.
-    MachineBasicBlock *EmitAtomicMinMaxWithCustomInserter(MachineInstr *BInstr,
-                                                          MachineBasicBlock *BB,
-                                                        unsigned cmovOpc) const;
+    /// Utility function to emit atomic-load-arith operations (and, or, xor,
+    /// nand, add, sub, swap) for 64-bit operands on 32-bit target.
+    MachineBasicBlock *EmitAtomicLoadArith6432(MachineInstr *MI,
+                                               MachineBasicBlock *MBB) const;
 
     // Utility function to emit the low-level va_arg code for X86-64.
     MachineBasicBlock *EmitVAARG64WithCustomInserter(
@@ -901,6 +967,12 @@ namespace llvm {
     MachineBasicBlock *emitLoweredTLSAddr(MachineInstr *MI,
                                           MachineBasicBlock *BB) const;
 
+    MachineBasicBlock *emitEHSjLjSetJmp(MachineInstr *MI,
+                                        MachineBasicBlock *MBB) const;
+
+    MachineBasicBlock *emitEHSjLjLongJmp(MachineInstr *MI,
+                                         MachineBasicBlock *MBB) const;
+
     /// Emit nodes that will be selected as "test Op0,Op0", or something
     /// equivalent, for use with the given x86 condition code.
     SDValue EmitTest(SDValue Op0, unsigned X86CC, SelectionDAG &DAG) const;
@@ -909,10 +981,14 @@ namespace llvm {
     /// equivalent, for use with the given x86 condition code.
     SDValue EmitCmp(SDValue Op0, SDValue Op1, unsigned X86CC,
                     SelectionDAG &DAG) const;
+
+    /// Convert a comparison if required by the subtarget.
+    SDValue ConvertCmpIfNecessary(SDValue Cmp, SelectionDAG &DAG) const;
   };
 
   namespace X86 {
-    FastISel *createFastISel(FunctionLoweringInfo &funcInfo);
+    FastISel *createFastISel(FunctionLoweringInfo &funcInfo,
+                             const TargetLibraryInfo *libInfo);
   }
 }
 

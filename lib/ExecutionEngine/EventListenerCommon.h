@@ -14,11 +14,11 @@
 #ifndef EVENT_LISTENER_COMMON_H
 #define EVENT_LISTENER_COMMON_H
 
-#include "llvm/Metadata.h"
-#include "llvm/Analysis/DebugInfo.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/Support/ValueHandle.h"
+#include "llvm/DebugInfo.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/ValueHandle.h"
 
 namespace llvm {
 

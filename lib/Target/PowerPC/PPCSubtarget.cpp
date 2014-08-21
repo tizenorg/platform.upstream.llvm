@@ -12,11 +12,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "PPCSubtarget.h"
-#include "PPCRegisterInfo.h"
 #include "PPC.h"
-#include "llvm/GlobalValue.h"
-#include "llvm/Target/TargetMachine.h"
+#include "PPCRegisterInfo.h"
+#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineScheduler.h"
+#include "llvm/IR/Attributes.h"
+#include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/Function.h"
+#include "llvm/Support/Host.h"
 #include "llvm/Support/TargetRegistry.h"
+#include "llvm/Target/TargetMachine.h"
 #include <cstdlib>
 
 #define GET_SUBTARGETINFO_TARGET_DESC
@@ -25,91 +30,13 @@
 
 using namespace llvm;
 
-#if defined(__APPLE__)
-#include <mach/mach.h>
-#include <mach/mach_host.h>
-#include <mach/host_info.h>
-#include <mach/machine.h>
-
-/// GetCurrentPowerPCFeatures - Returns the current CPUs features.
-static const char *GetCurrentPowerPCCPU() {
-  host_basic_info_data_t hostInfo;
-  mach_msg_type_number_t infoCount;
-
-  infoCount = HOST_BASIC_INFO_COUNT;
-  host_info(mach_host_self(), HOST_BASIC_INFO, (host_info_t)&hostInfo, 
-            &infoCount);
-            
-  if (hostInfo.cpu_type != CPU_TYPE_POWERPC) return "generic";
-
-  switch(hostInfo.cpu_subtype) {
-  case CPU_SUBTYPE_POWERPC_601:   return "601";
-  case CPU_SUBTYPE_POWERPC_602:   return "602";
-  case CPU_SUBTYPE_POWERPC_603:   return "603";
-  case CPU_SUBTYPE_POWERPC_603e:  return "603e";
-  case CPU_SUBTYPE_POWERPC_603ev: return "603ev";
-  case CPU_SUBTYPE_POWERPC_604:   return "604";
-  case CPU_SUBTYPE_POWERPC_604e:  return "604e";
-  case CPU_SUBTYPE_POWERPC_620:   return "620";
-  case CPU_SUBTYPE_POWERPC_750:   return "750";
-  case CPU_SUBTYPE_POWERPC_7400:  return "7400";
-  case CPU_SUBTYPE_POWERPC_7450:  return "7450";
-  case CPU_SUBTYPE_POWERPC_970:   return "970";
-  default: ;
-  }
-  
-  return "generic";
-}
-#endif
-
-
 PPCSubtarget::PPCSubtarget(const std::string &TT, const std::string &CPU,
                            const std::string &FS, bool is64Bit)
   : PPCGenSubtargetInfo(TT, CPU, FS)
-  , StackAlignment(16)
-  , DarwinDirective(PPC::DIR_NONE)
-  , IsGigaProcessor(false)
-  , Has64BitSupport(false)
-  , Use64BitRegs(false)
   , IsPPC64(is64Bit)
-  , HasAltivec(false)
-  , HasFSQRT(false)
-  , HasSTFIWX(false)
-  , IsBookE(false)
-  , HasLazyResolverStubs(false)
-  , IsJITCodeModel(false)
   , TargetTriple(TT) {
-
-  // Determine default and user specified characteristics
-  std::string CPUName = CPU;
-  if (CPUName.empty())
-    CPUName = "generic";
-#if defined(__APPLE__)
-  if (CPUName == "generic")
-    CPUName = GetCurrentPowerPCCPU();
-#endif
-
-  // Parse features string.
-  ParseSubtargetFeatures(CPUName, FS);
-
-  // Initialize scheduling itinerary for the specified CPU.
-  InstrItins = getInstrItineraryForCPU(CPUName);
-
-  // If we are generating code for ppc64, verify that options make sense.
-  if (is64Bit) {
-    Has64BitSupport = true;
-    // Silently force 64-bit register use on ppc64.
-    Use64BitRegs = true;
-  }
-  
-  // If the user requested use of 64-bit regs, but the cpu selected doesn't
-  // support it, ignore.
-  if (use64BitRegs() && !has64BitSupport())
-    Use64BitRegs = false;
-
-  // Set up darwin-specific properties.
-  if (isDarwin())
-    HasLazyResolverStubs = true;
+  initializeEnvironment();
+  resetSubtargetFeatures(CPU, FS);
 }
 
 /// SetJITMode - This is called to inform the subtarget info that we are
@@ -124,6 +51,100 @@ void PPCSubtarget::SetJITMode() {
   IsJITCodeModel = true;
 }
 
+void PPCSubtarget::resetSubtargetFeatures(const MachineFunction *MF) {
+  AttributeSet FnAttrs = MF->getFunction()->getAttributes();
+  Attribute CPUAttr = FnAttrs.getAttribute(AttributeSet::FunctionIndex,
+                                           "target-cpu");
+  Attribute FSAttr = FnAttrs.getAttribute(AttributeSet::FunctionIndex,
+                                          "target-features");
+  std::string CPU =
+    !CPUAttr.hasAttribute(Attribute::None) ? CPUAttr.getValueAsString() : "";
+  std::string FS =
+    !FSAttr.hasAttribute(Attribute::None) ? FSAttr.getValueAsString() : "";
+  if (!FS.empty()) {
+    initializeEnvironment();
+    resetSubtargetFeatures(CPU, FS);
+  }
+}
+
+void PPCSubtarget::initializeEnvironment() {
+  StackAlignment = 16;
+  DarwinDirective = PPC::DIR_NONE;
+  HasMFOCRF = false;
+  Has64BitSupport = false;
+  Use64BitRegs = false;
+  HasAltivec = false;
+  HasQPX = false;
+  HasFCPSGN = false;
+  HasFSQRT = false;
+  HasFRE = false;
+  HasFRES = false;
+  HasFRSQRTE = false;
+  HasFRSQRTES = false;
+  HasRecipPrec = false;
+  HasSTFIWX = false;
+  HasLFIWAX = false;
+  HasFPRND = false;
+  HasFPCVT = false;
+  HasISEL = false;
+  HasPOPCNTD = false;
+  HasLDBRX = false;
+  IsBookE = false;
+  DeprecatedMFTB = false;
+  DeprecatedDST = false;
+  HasLazyResolverStubs = false;
+  IsJITCodeModel = false;
+}
+
+void PPCSubtarget::resetSubtargetFeatures(StringRef CPU, StringRef FS) {
+  // Determine default and user specified characteristics
+  std::string CPUName = CPU;
+  if (CPUName.empty())
+    CPUName = "generic";
+#if (defined(__APPLE__) || defined(__linux__)) && \
+    (defined(__ppc__) || defined(__powerpc__))
+  if (CPUName == "generic")
+    CPUName = sys::getHostCPUName();
+#endif
+
+  // Initialize scheduling itinerary for the specified CPU.
+  InstrItins = getInstrItineraryForCPU(CPUName);
+
+  // Make sure 64-bit features are available when CPUname is generic
+  std::string FullFS = FS;
+
+  // If we are generating code for ppc64, verify that options make sense.
+  if (IsPPC64) {
+    Has64BitSupport = true;
+    // Silently force 64-bit register use on ppc64.
+    Use64BitRegs = true;
+    if (!FullFS.empty())
+      FullFS = "+64bit," + FullFS;
+    else
+      FullFS = "+64bit";
+  }
+
+  // Parse features string.
+  ParseSubtargetFeatures(CPUName, FullFS);
+
+  // If the user requested use of 64-bit regs, but the cpu selected doesn't
+  // support it, ignore.
+  if (use64BitRegs() && !has64BitSupport())
+    Use64BitRegs = false;
+
+  // Set up darwin-specific properties.
+  if (isDarwin())
+    HasLazyResolverStubs = true;
+
+  // QPX requires a 32-byte aligned stack. Note that we need to do this if
+  // we're compiling for a BG/Q system regardless of whether or not QPX
+  // is enabled because external functions will assume this alignment.
+  if (hasQPX() || isBGQ())
+    StackAlignment = 32;
+
+  // Determine endianness.
+  IsLittleEndian = (TargetTriple.getArch() == Triple::ppc64le);
+}
 
 /// hasLazyResolverStub - Return true if accesses to the specified global have
 /// to go through a dyld lazy resolution stub.  This means that an extra load
@@ -146,10 +167,7 @@ bool PPCSubtarget::enablePostRAScheduler(
            CodeGenOpt::Level OptLevel,
            TargetSubtargetInfo::AntiDepBreakMode& Mode,
            RegClassVector& CriticalPathRCs) const {
-  if (DarwinDirective == PPC::DIR_440 || DarwinDirective == PPC::DIR_A2)
-    Mode = TargetSubtargetInfo::ANTIDEP_ALL;
-  else
-    Mode = TargetSubtargetInfo::ANTIDEP_CRITICAL;
+  Mode = TargetSubtargetInfo::ANTIDEP_ALL;
 
   CriticalPathRCs.clear();
 
@@ -157,7 +175,45 @@ bool PPCSubtarget::enablePostRAScheduler(
     CriticalPathRCs.push_back(&PPC::G8RCRegClass);
   else
     CriticalPathRCs.push_back(&PPC::GPRCRegClass);
-
+    
   return OptLevel >= CodeGenOpt::Default;
+}
+
+// Embedded cores need aggressive scheduling.
+static bool needsAggressiveScheduling(unsigned Directive) {
+  switch (Directive) {
+  default: return false;
+  case PPC::DIR_440:
+  case PPC::DIR_A2:
+  case PPC::DIR_E500mc:
+  case PPC::DIR_E5500:
+    return true;
+  }
+}
+
+bool PPCSubtarget::enableMachineScheduler() const {
+  // Enable MI scheduling for the embedded cores.
+  // FIXME: Enable this for all cores (some additional modeling
+  // may be necessary).
+  return needsAggressiveScheduling(DarwinDirective);
+}
+
+void PPCSubtarget::overrideSchedPolicy(MachineSchedPolicy &Policy,
+                                       MachineInstr *begin,
+                                       MachineInstr *end,
+                                       unsigned NumRegionInstrs) const {
+  if (needsAggressiveScheduling(DarwinDirective)) {
+    Policy.OnlyTopDown = false;
+    Policy.OnlyBottomUp = false;
+  }
+
+  // Spilling is generally expensive on all PPC cores, so always enable
+  // register-pressure tracking.
+  Policy.ShouldTrackPressure = true;
+}
+
+bool PPCSubtarget::useAA() const {
+  // Use AA during code generation for the embedded cores.
+  return needsAggressiveScheduling(DarwinDirective);
 }
 

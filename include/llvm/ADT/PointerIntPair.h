@@ -14,6 +14,7 @@
 #ifndef LLVM_ADT_POINTERINTPAIR_H
 #define LLVM_ADT_POINTERINTPAIR_H
 
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/PointerLikeTypeTraits.h"
 #include <cassert>
 
@@ -29,7 +30,7 @@ struct DenseMapInfo;
 /// on the number of bits available according to PointerLikeTypeTraits for the
 /// type.
 ///
-/// Note that PointerIntPair always puts the Int part in the highest bits
+/// Note that PointerIntPair always puts the IntVal part in the highest bits
 /// possible.  For example, PointerIntPair<void*, 1, bool> will put the bit for
 /// the bool into bit #2, not bit #0, which allows the low two bits to be used
 /// for something else.  For example, this allows:
@@ -40,7 +41,7 @@ template <typename PointerTy, unsigned IntBits, typename IntType=unsigned,
           typename PtrTraits = PointerLikeTypeTraits<PointerTy> >
 class PointerIntPair {
   intptr_t Value;
-  enum {
+  enum LLVM_ENUM_INT_TYPE(uintptr_t) {
     /// PointerBitMask - The bits that come from the pointer.
     PointerBitMask =
       ~(uintptr_t)(((intptr_t)1 << PtrTraits::NumLowBitsAvailable)-1),
@@ -57,11 +58,13 @@ class PointerIntPair {
   };
 public:
   PointerIntPair() : Value(0) {}
-  PointerIntPair(PointerTy Ptr, IntType Int) : Value(0) {
+  PointerIntPair(PointerTy PtrVal, IntType IntVal) {
     assert(IntBits <= PtrTraits::NumLowBitsAvailable &&
            "PointerIntPair formed with integer size too large for pointer");
-    setPointer(Ptr);
-    setInt(Int);
+    setPointerAndInt(PtrVal, IntVal);
+  }
+  explicit PointerIntPair(PointerTy PtrVal) {
+    initWithPointer(PtrVal);
   }
 
   PointerTy getPointer() const {
@@ -73,22 +76,41 @@ public:
     return (IntType)((Value >> IntShift) & IntMask);
   }
 
-  void setPointer(PointerTy Ptr) {
-    intptr_t PtrVal
-      = reinterpret_cast<intptr_t>(PtrTraits::getAsVoidPointer(Ptr));
-    assert((PtrVal & ((1 << PtrTraits::NumLowBitsAvailable)-1)) == 0 &&
+  void setPointer(PointerTy PtrVal) {
+    intptr_t PtrWord
+      = reinterpret_cast<intptr_t>(PtrTraits::getAsVoidPointer(PtrVal));
+    assert((PtrWord & ((1 << PtrTraits::NumLowBitsAvailable)-1)) == 0 &&
            "Pointer is not sufficiently aligned");
     // Preserve all low bits, just update the pointer.
-    Value = PtrVal | (Value & ~PointerBitMask);
+    Value = PtrWord | (Value & ~PointerBitMask);
   }
 
-  void setInt(IntType Int) {
-    intptr_t IntVal = Int;
-    assert(IntVal < (1 << IntBits) && "Integer too large for field");
+  void setInt(IntType IntVal) {
+    intptr_t IntWord = static_cast<intptr_t>(IntVal);
+    assert(IntWord < (1 << IntBits) && "Integer too large for field");
     
     // Preserve all bits other than the ones we are updating.
     Value &= ~ShiftedIntMask;     // Remove integer field.
-    Value |= IntVal << IntShift;  // Set new integer.
+    Value |= IntWord << IntShift;  // Set new integer.
+  }
+
+  void initWithPointer(PointerTy PtrVal) {
+    intptr_t PtrWord
+      = reinterpret_cast<intptr_t>(PtrTraits::getAsVoidPointer(PtrVal));
+    assert((PtrWord & ((1 << PtrTraits::NumLowBitsAvailable)-1)) == 0 &&
+           "Pointer is not sufficiently aligned");
+    Value = PtrWord;
+  }
+
+  void setPointerAndInt(PointerTy PtrVal, IntType IntVal) {
+    intptr_t PtrWord
+      = reinterpret_cast<intptr_t>(PtrTraits::getAsVoidPointer(PtrVal));
+    assert((PtrWord & ((1 << PtrTraits::NumLowBitsAvailable)-1)) == 0 &&
+           "Pointer is not sufficiently aligned");
+    intptr_t IntWord = static_cast<intptr_t>(IntVal);
+    assert(IntWord < (1 << IntBits) && "Integer too large for field");
+
+    Value = PtrWord | (IntWord << IntShift);
   }
 
   PointerTy const *getAddrOfPointer() const {
@@ -108,7 +130,14 @@ public:
   static PointerIntPair getFromOpaqueValue(void *V) {
     PointerIntPair P; P.setFromOpaqueValue(V); return P; 
   }
-  
+
+  // Allow PointerIntPairs to be created from const void * if and only if the
+  // pointer type could be created from a const void *.
+  static PointerIntPair getFromOpaqueValue(const void *V) {
+    (void)PtrTraits::getFromVoidPointer(V);
+    return getFromOpaqueValue(const_cast<void *>(V));
+  }
+
   bool operator==(const PointerIntPair &RHS) const {return Value == RHS.Value;}
   bool operator!=(const PointerIntPair &RHS) const {return Value != RHS.Value;}
   bool operator<(const PointerIntPair &RHS) const {return Value < RHS.Value;}
@@ -128,12 +157,12 @@ template<typename PointerTy, unsigned IntBits, typename IntType>
 struct DenseMapInfo<PointerIntPair<PointerTy, IntBits, IntType> > {
   typedef PointerIntPair<PointerTy, IntBits, IntType> Ty;
   static Ty getEmptyKey() {
-    intptr_t Val = -1;
+    uintptr_t Val = static_cast<uintptr_t>(-1);
     Val <<= PointerLikeTypeTraits<PointerTy>::NumLowBitsAvailable;
     return Ty(reinterpret_cast<PointerTy>(Val), IntType((1 << IntBits)-1));
   }
   static Ty getTombstoneKey() {
-    intptr_t Val = -2;
+    uintptr_t Val = static_cast<uintptr_t>(-2);
     Val <<= PointerLikeTypeTraits<PointerTy>::NumLowBitsAvailable;
     return Ty(reinterpret_cast<PointerTy>(Val), IntType(0));
   }
@@ -156,6 +185,10 @@ public:
   }
   static inline PointerIntPair<PointerTy, IntBits, IntType>
   getFromVoidPointer(void *P) {
+    return PointerIntPair<PointerTy, IntBits, IntType>::getFromOpaqueValue(P);
+  }
+  static inline PointerIntPair<PointerTy, IntBits, IntType>
+  getFromVoidPointer(const void *P) {
     return PointerIntPair<PointerTy, IntBits, IntType>::getFromOpaqueValue(P);
   }
   enum {

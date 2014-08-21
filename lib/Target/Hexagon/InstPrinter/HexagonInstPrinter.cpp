@@ -12,20 +12,22 @@
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "asm-printer"
-#include "Hexagon.h"
 #include "HexagonAsmPrinter.h"
+#include "Hexagon.h"
 #include "HexagonInstPrinter.h"
+#include "MCTargetDesc/HexagonMCInst.h"
 #include "llvm/MC/MCInst.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCExpr.h"
-#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/raw_ostream.h"
-#include <cstdio>
 
 using namespace llvm;
 
 #define GET_INSTRUCTION_NAME
 #include "HexagonGenAsmWriter.inc"
+
+const char HexagonInstPrinter::PacketPadding = '\t';
 
 StringRef HexagonInstPrinter::getOpcodeName(unsigned Opcode) const {
   return MII.getName(Opcode);
@@ -37,20 +39,49 @@ StringRef HexagonInstPrinter::getRegName(unsigned RegNo) const {
 
 void HexagonInstPrinter::printInst(const MCInst *MI, raw_ostream &O,
                                    StringRef Annot) {
-  const char packetPadding[] = "      ";
+  printInst((const HexagonMCInst*)(MI), O, Annot);
+}
+
+void HexagonInstPrinter::printInst(const HexagonMCInst *MI, raw_ostream &O,
+                                   StringRef Annot) {
   const char startPacket = '{',
              endPacket = '}';
   // TODO: add outer HW loop when it's supported too.
   if (MI->getOpcode() == Hexagon::ENDLOOP0) {
-    MCInst Nop;
+    // Ending a harware loop is different from ending an regular packet.
+    assert(MI->isPacketEnd() && "Loop-end must also end the packet");
 
-    O << packetPadding << startPacket << '\n';
-    Nop.setOpcode(Hexagon::NOP);
-    printInstruction(&Nop, O);
-    O << packetPadding << endPacket;
+    if (MI->isPacketStart()) {
+      // There must be a packet to end a loop.
+      // FIXME: when shuffling is always run, this shouldn't be needed.
+      HexagonMCInst Nop;
+      StringRef NoAnnot;
+
+      Nop.setOpcode (Hexagon::NOP);
+      Nop.setPacketStart (MI->isPacketStart());
+      printInst (&Nop, O, NoAnnot);
+    }
+
+    // Close the packet.
+    if (MI->isPacketEnd())
+      O << PacketPadding << endPacket;
+
+    printInstruction(MI, O);
+  }
+  else {
+    // Prefix the insn opening the packet.
+    if (MI->isPacketStart())
+      O << PacketPadding << startPacket << '\n';
+
+    printInstruction(MI, O);
+
+    // Suffix the insn closing the packet.
+    if (MI->isPacketEnd())
+      // Suffix the packet in a new line always, since the GNU assembler has
+      // issues with a closing brace on the same line as CONST{32,64}.
+      O << '\n' << PacketPadding << endPacket;
   }
 
-  printInstruction(MI, O);
   printAnnotation(O, Annot);
 }
 
@@ -65,22 +96,33 @@ void HexagonInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
   } else if(MO.isImm()) {
     printImmOperand(MI, OpNo, O);
   } else {
-    assert(false && "Unknown operand");
+    llvm_unreachable("Unknown operand");
   }
 }
 
-void HexagonInstPrinter::printImmOperand
-  (const MCInst *MI, unsigned OpNo, raw_ostream &O) const {
-  O << MI->getOperand(OpNo).getImm();
+void HexagonInstPrinter::printImmOperand(const MCInst *MI, unsigned OpNo,
+                                         raw_ostream &O) const {
+  const MCOperand& MO = MI->getOperand(OpNo);
+
+  if(MO.isExpr()) {
+    O << *MO.getExpr();
+  } else if(MO.isImm()) {
+    O << MI->getOperand(OpNo).getImm();
+  } else {
+    llvm_unreachable("Unknown operand");
+  }
 }
 
 void HexagonInstPrinter::printExtOperand(const MCInst *MI, unsigned OpNo,
-                                                raw_ostream &O) const {
-  O << MI->getOperand(OpNo).getImm();
+                                         raw_ostream &O) const {
+  const HexagonMCInst *HMCI = static_cast<const HexagonMCInst*>(MI);
+  if (HMCI->isConstExtended())
+    O << "#";
+  printOperand(MI, OpNo, O);
 }
 
-void HexagonInstPrinter::printUnsignedImmOperand
-  (const MCInst *MI, unsigned OpNo, raw_ostream &O) const {
+void HexagonInstPrinter::printUnsignedImmOperand(const MCInst *MI,
+                                    unsigned OpNo, raw_ostream &O) const {
   O << MI->getOperand(OpNo).getImm();
 }
 
@@ -89,13 +131,13 @@ void HexagonInstPrinter::printNegImmOperand(const MCInst *MI, unsigned OpNo,
   O << -MI->getOperand(OpNo).getImm();
 }
 
-void HexagonInstPrinter::printNOneImmOperand
-  (const MCInst *MI, unsigned OpNo, raw_ostream &O) const {
+void HexagonInstPrinter::printNOneImmOperand(const MCInst *MI, unsigned OpNo,
+                                             raw_ostream &O) const {
   O << -1;
 }
 
-void HexagonInstPrinter::printMEMriOperand
-  (const MCInst *MI, unsigned OpNo, raw_ostream &O) const {
+void HexagonInstPrinter::printMEMriOperand(const MCInst *MI, unsigned OpNo,
+                                           raw_ostream &O) const {
   const MCOperand& MO0 = MI->getOperand(OpNo);
   const MCOperand& MO1 = MI->getOperand(OpNo + 1);
 
@@ -103,8 +145,8 @@ void HexagonInstPrinter::printMEMriOperand
   O << " + #" << MO1.getImm();
 }
 
-void HexagonInstPrinter::printFrameIndexOperand
-  (const MCInst *MI, unsigned OpNo, raw_ostream &O) const {
+void HexagonInstPrinter::printFrameIndexOperand(const MCInst *MI, unsigned OpNo,
+                                                raw_ostream &O) const {
   const MCOperand& MO0 = MI->getOperand(OpNo);
   const MCOperand& MO1 = MI->getOperand(OpNo + 1);
 
@@ -136,7 +178,7 @@ void HexagonInstPrinter::printBranchOperand(const MCInst *MI, unsigned OpNo,
                                             raw_ostream &O) const {
   // Branches can take an immediate operand.  This is used by the branch
   // selection pass to print $+8, an eight byte displacement from the PC.
-  assert("Unknown branch operand.");
+  llvm_unreachable("Unknown branch operand.");
 }
 
 void HexagonInstPrinter::printCallOperand(const MCInst *MI, unsigned OpNo,
@@ -153,15 +195,9 @@ void HexagonInstPrinter::printPredicateOperand(const MCInst *MI, unsigned OpNo,
 
 void HexagonInstPrinter::printSymbol(const MCInst *MI, unsigned OpNo,
                                      raw_ostream &O, bool hi) const {
-  const MCOperand& MO = MI->getOperand(OpNo);
+  assert(MI->getOperand(OpNo).isImm() && "Unknown symbol operand");
 
-  O << '#' << (hi? "HI": "LO") << '(';
-  if (MO.isImm()) {
-    O << '#';
-    printOperand(MI, OpNo, O);
-  } else {
-    assert("Unknown symbol operand");
-    printOperand(MI, OpNo, O);
-  }
+  O << '#' << (hi ? "HI" : "LO") << "(#";
+  printOperand(MI, OpNo, O);
   O << ')';
 }

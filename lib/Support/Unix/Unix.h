@@ -21,42 +21,34 @@
 
 #include "llvm/Config/config.h"     // Get autoconf configuration settings
 #include "llvm/Support/Errno.h"
-#include <cstdlib>
-#include <cstdio>
-#include <cstring>
-#include <cerrno>
-#include <string>
 #include <algorithm>
+#include <assert.h>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <sys/types.h>
 
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
-#endif
-
-#ifdef HAVE_SYS_TYPES_H
-#include <sys/types.h>
 #endif
 
 #ifdef HAVE_SYS_PARAM_H
 #include <sys/param.h>
 #endif
 
-#ifdef HAVE_ASSERT_H
-#include <assert.h>
-#endif
-
-#ifdef TIME_WITH_SYS_TIME
+#ifdef HAVE_SYS_TIME_H
 # include <sys/time.h>
-# include <time.h>
-#else
-# ifdef HAVE_SYS_TIME_H
-#  include <sys/time.h>
-# else
-#  include <time.h>
-# endif
 #endif
+#include <time.h>
 
 #ifdef HAVE_SYS_WAIT_H
 # include <sys/wait.h>
+#endif
+
+#ifdef HAVE_DLFCN_H
+# include <dlfcn.h>
 #endif
 
 #ifndef WEXITSTATUS

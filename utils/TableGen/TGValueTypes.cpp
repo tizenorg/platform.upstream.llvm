@@ -15,25 +15,44 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/ValueTypes.h"
+#include "llvm/Support/Casting.h"
 #include <map>
 using namespace llvm;
 
 namespace llvm {
 
 class Type {
+protected:
+  enum TypeKind {
+    TK_ExtendedIntegerType,
+    TK_ExtendedVectorType
+  };
+private:
+  TypeKind Kind;
 public:
+  TypeKind getKind() const {
+    return Kind;
+  }
+  Type(TypeKind K) : Kind(K) {}
   virtual unsigned getSizeInBits() const = 0;
-  virtual ~Type() {}
+  virtual ~Type();
 };
+
+// Provide out-of-line definition to prevent weak vtable.
+Type::~Type() {}
 
 }
 
+namespace {
 class ExtendedIntegerType : public Type {
   unsigned BitWidth;
 public:
   explicit ExtendedIntegerType(unsigned bits)
-    : BitWidth(bits) {}
-  unsigned getSizeInBits() const {
+    : Type(TK_ExtendedIntegerType), BitWidth(bits) {}
+  static bool classof(const Type *T) {
+    return T->getKind() == TK_ExtendedIntegerType;
+  }
+  virtual unsigned getSizeInBits() const {
     return getBitWidth();
   }
   unsigned getBitWidth() const {
@@ -46,8 +65,11 @@ class ExtendedVectorType : public Type {
   unsigned NumElements;
 public:
   ExtendedVectorType(EVT elty, unsigned num)
-    : ElementType(elty), NumElements(num) {}
-  unsigned getSizeInBits() const {
+    : Type(TK_ExtendedVectorType), ElementType(elty), NumElements(num) {}
+  static bool classof(const Type *T) {
+    return T->getKind() == TK_ExtendedVectorType;
+  }
+  virtual unsigned getSizeInBits() const {
     return getNumElements() * getElementType().getSizeInBits();
   }
   EVT getElementType() const {
@@ -57,6 +79,7 @@ public:
     return NumElements;
   }
 };
+} // end anonymous namespace
 
 static std::map<unsigned, const Type *>
   ExtendedIntegerTypeMap;
@@ -71,12 +94,12 @@ bool EVT::isExtendedFloatingPoint() const {
 
 bool EVT::isExtendedInteger() const {
   assert(isExtended() && "Type is not extended!");
-  return dynamic_cast<const ExtendedIntegerType *>(LLVMTy) != 0;
+  return isa<ExtendedIntegerType>(LLVMTy);
 }
 
 bool EVT::isExtendedVector() const {
   assert(isExtended() && "Type is not extended!");
-  return dynamic_cast<const ExtendedVectorType *>(LLVMTy) != 0;
+  return isa<ExtendedVectorType>(LLVMTy);
 }
 
 bool EVT::isExtended64BitVector() const {

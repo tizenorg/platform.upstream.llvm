@@ -24,9 +24,17 @@ namespace llvm {
   // Possible float ABI settings. Used with FloatABIType in TargetOptions.h.
   namespace FloatABI {
     enum ABIType {
-      Default, // Target-specific (either soft or hard depending on triple, etc).
+      Default, // Target-specific (either soft or hard depending on triple,etc).
       Soft, // Soft float.
       Hard  // Hard float.
+    };
+  }
+
+  namespace FPOpFusion {
+    enum FPOpFusionMode {
+      Fast,     // Enable fusion of FP ops wherever it's profitable.
+      Standard, // Only allow fusion of 'blessed' ops (currently just fmuladd).
+      Strict    // Never fuse FP-ops.
     };
   }
 
@@ -34,16 +42,16 @@ namespace llvm {
   public:
     TargetOptions()
         : PrintMachineCode(false), NoFramePointerElim(false),
-          NoFramePointerElimNonLeaf(false), LessPreciseFPMADOption(false),
-          NoExcessFPPrecision(false), UnsafeFPMath(false), NoInfsFPMath(false),
+          LessPreciseFPMADOption(false),
+          UnsafeFPMath(false), NoInfsFPMath(false),
           NoNaNsFPMath(false), HonorSignDependentRoundingFPMathOption(false),
-          UseSoftFloat(false), NoZerosInBSS(false), JITExceptionHandling(false),
+          UseSoftFloat(false), NoZerosInBSS(false),
           JITEmitDebugInfo(false), JITEmitDebugInfoToDisk(false),
           GuaranteedTailCallOpt(false), DisableTailCalls(false),
-          StackAlignmentOverride(0), RealignStack(true),
-          DisableJumpTables(false), EnableFastISel(false),
-          PositionIndependentExecutable(false), EnableSegmentedStacks(false),
-          TrapFuncName(""), FloatABIType(FloatABI::Default)
+          StackAlignmentOverride(0),
+          EnableFastISel(false), PositionIndependentExecutable(false),
+          EnableSegmentedStacks(false), UseInitArray(false), TrapFuncName(""),
+          FloatABIType(FloatABI::Default), AllowFPOpFusion(FPOpFusion::Standard)
     {}
 
     /// PrintMachineCode - This flag is enabled when the -print-machineinstrs
@@ -56,12 +64,6 @@ namespace llvm {
     /// elimination optimization, this option should disable it.
     unsigned NoFramePointerElim : 1;
 
-    /// NoFramePointerElimNonLeaf - This flag is enabled when the
-    /// -disable-non-leaf-fp-elim is specified on the command line. If the
-    /// target supports the frame pointer elimination optimization, this option
-    /// should disable it for non-leaf functions.
-    unsigned NoFramePointerElimNonLeaf : 1;
-
     /// DisableFramePointerElim - This returns true if frame pointer elimination
     /// optimization should be disabled for the given machine function.
     bool DisableFramePointerElim(const MachineFunction &MF) const;
@@ -73,14 +75,6 @@ namespace llvm {
     /// operations individually.
     unsigned LessPreciseFPMADOption : 1;
     bool LessPreciseFPMAD() const;
-
-    /// NoExcessFPPrecision - This flag is enabled when the
-    /// -disable-excess-fp-precision flag is specified on the command line.
-    /// When this flag is off (the default), the code generator is allowed to
-    /// produce results that are "more precise" than IEEE allows.  This includes
-    /// use of FMA-like operations and use of the X86 FP registers without
-    /// rounding all over the place.
-    unsigned NoExcessFPPrecision : 1;
 
     /// UnsafeFPMath - This flag is enabled when the
     /// -enable-unsafe-fp-math flag is specified on the command line.  When
@@ -123,10 +117,6 @@ namespace llvm {
     /// crt*.o compiling).
     unsigned NoZerosInBSS : 1;
 
-    /// JITExceptionHandling - This flag indicates that the JIT should emit
-    /// exception handling information.
-    unsigned JITExceptionHandling : 1;
-
     /// JITEmitDebugInfo - This flag indicates that the JIT should try to emit
     /// debug information and notify a debugger about it.
     unsigned JITEmitDebugInfo : 1;
@@ -151,14 +141,6 @@ namespace llvm {
     /// StackAlignmentOverride - Override default stack alignment for target.
     unsigned StackAlignmentOverride;
 
-    /// RealignStack - This flag indicates whether the stack should be
-    /// automatically realigned, if needed.
-    unsigned RealignStack : 1;
-
-    /// DisableJumpTables - This flag indicates jump tables should not be
-    /// generated.
-    unsigned DisableJumpTables : 1;
-
     /// EnableFastISel - This flag enables fast-path instruction selection
     /// which trades away generated code quality in favor of reducing
     /// compile time.
@@ -171,6 +153,10 @@ namespace llvm {
     unsigned PositionIndependentExecutable : 1;
 
     unsigned EnableSegmentedStacks : 1;
+
+    /// UseInitArray - Use .init_array instead of .ctors for static
+    /// constructors.
+    unsigned UseInitArray : 1;
 
     /// getTrapFunctionName - If this returns a non-empty string, this means
     /// isel should lower Intrinsic::trap to a call to the specified function
@@ -185,7 +171,59 @@ namespace llvm {
     /// Such a combination is unfortunately popular (e.g. arm-apple-darwin).
     /// Hard presumes that the normal FP ABI is used.
     FloatABI::ABIType FloatABIType;
+
+    /// AllowFPOpFusion - This flag is set by the -fuse-fp-ops=xxx option.
+    /// This controls the creation of fused FP ops that store intermediate
+    /// results in higher precision than IEEE allows (E.g. FMAs).
+    ///
+    /// Fast mode - allows formation of fused FP ops whenever they're
+    /// profitable.
+    /// Standard mode - allow fusion only for 'blessed' FP ops. At present the
+    /// only blessed op is the fmuladd intrinsic. In the future more blessed ops
+    /// may be added.
+    /// Strict mode - allow fusion only if/when it can be proven that the excess
+    /// precision won't effect the result.
+    ///
+    /// Note: This option only controls formation of fused ops by the
+    /// optimizers.  Fused operations that are explicitly specified (e.g. FMA
+    /// via the llvm.fma.* intrinsic) will always be honored, regardless of
+    /// the value of this option.
+    FPOpFusion::FPOpFusionMode AllowFPOpFusion;
   };
+
+// Comparison operators:
+
+
+inline bool operator==(const TargetOptions &LHS,
+                       const TargetOptions &RHS) {
+#define ARE_EQUAL(X) LHS.X == RHS.X
+  return
+    ARE_EQUAL(UnsafeFPMath) &&
+    ARE_EQUAL(NoInfsFPMath) &&
+    ARE_EQUAL(NoNaNsFPMath) &&
+    ARE_EQUAL(HonorSignDependentRoundingFPMathOption) &&
+    ARE_EQUAL(UseSoftFloat) &&
+    ARE_EQUAL(NoZerosInBSS) &&
+    ARE_EQUAL(JITEmitDebugInfo) &&
+    ARE_EQUAL(JITEmitDebugInfoToDisk) &&
+    ARE_EQUAL(GuaranteedTailCallOpt) &&
+    ARE_EQUAL(DisableTailCalls) &&
+    ARE_EQUAL(StackAlignmentOverride) &&
+    ARE_EQUAL(EnableFastISel) &&
+    ARE_EQUAL(PositionIndependentExecutable) &&
+    ARE_EQUAL(EnableSegmentedStacks) &&
+    ARE_EQUAL(UseInitArray) &&
+    ARE_EQUAL(TrapFuncName) &&
+    ARE_EQUAL(FloatABIType) &&
+    ARE_EQUAL(AllowFPOpFusion);
+#undef ARE_EQUAL
+}
+
+inline bool operator!=(const TargetOptions &LHS,
+                       const TargetOptions &RHS) {
+  return !(LHS == RHS);
+}
+
 } // End llvm namespace
 
 #endif

@@ -21,7 +21,7 @@ entry:
 
 ; PR10180: same crash, but with vectors
 define <4 x float> @foo(i1 %b, <4 x float> %x, <4 x float> %y, <4 x float> %z) {
-; CHECK: @foo
+; CHECK-LABEL: @foo(
 ; CHECK: fsub <4 x float>
 ; CHECK: select
 ; CHECK: fadd <4 x float>
@@ -29,4 +29,21 @@ define <4 x float> @foo(i1 %b, <4 x float> %x, <4 x float> %y, <4 x float> %z) {
   %sub = fsub <4 x float> %x, %z
   %sel = select i1 %b, <4 x float> %a, <4 x float> %sub 
   ret <4 x float> %sel
+}
+
+; CHECK-LABEL: @test3(
+define i32 @test3(i1 %bool, i32 %a) {
+entry:
+  %cond = or i1 %bool, true
+  br i1 %cond, label %return, label %xpto
+
+; technically reachable, but this malformed IR may appear as a result of constant propagation
+xpto:
+  %select = select i1 %bool, i32 %a, i32 %select
+  %select2 = select i1 %bool, i32 %select2, i32 %a
+  %sum = add i32 %select, %select2
+  ret i32 %sum
+
+return:
+  ret i32 7
 }

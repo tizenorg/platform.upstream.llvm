@@ -47,23 +47,23 @@
 #include "llvm/Transforms/IPO.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/FoldingSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/ADT/STLExtras.h"
-#include "llvm/Constants.h"
-#include "llvm/InlineAsm.h"
-#include "llvm/Instructions.h"
-#include "llvm/LLVMContext.h"
-#include "llvm/Module.h"
-#include "llvm/Operator.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CallSite.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/IRBuilder.h"
 #include "llvm/Support/ValueHandle.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetData.h"
 #include <vector>
 using namespace llvm;
 
@@ -71,6 +71,15 @@ STATISTIC(NumFunctionsMerged, "Number of functions merged");
 STATISTIC(NumThunksWritten, "Number of thunks generated");
 STATISTIC(NumAliasesWritten, "Number of aliases generated");
 STATISTIC(NumDoubleWeak, "Number of new functions created");
+
+/// Returns the type id for a type to be hashed. We turn pointer types into
+/// integers here because the actual compare logic below considers pointers and
+/// integers of the same size as equal.
+static Type::TypeID getTypeIDForHash(Type *Ty) {
+  if (Ty->isPointerTy())
+    return Type::IntegerTyID;
+  return Ty->getTypeID();
+}
 
 /// Creates a hash-code for the function which is the same for any two
 /// functions that will compare equal, without looking at the instructions
@@ -83,28 +92,28 @@ static unsigned profileFunction(const Function *F) {
   ID.AddInteger(F->getCallingConv());
   ID.AddBoolean(F->hasGC());
   ID.AddBoolean(FTy->isVarArg());
-  ID.AddInteger(FTy->getReturnType()->getTypeID());
+  ID.AddInteger(getTypeIDForHash(FTy->getReturnType()));
   for (unsigned i = 0, e = FTy->getNumParams(); i != e; ++i)
-    ID.AddInteger(FTy->getParamType(i)->getTypeID());
+    ID.AddInteger(getTypeIDForHash(FTy->getParamType(i)));
   return ID.ComputeHash();
 }
 
 namespace {
 
 /// ComparableFunction - A struct that pairs together functions with a
-/// TargetData so that we can keep them together as elements in the DenseSet.
+/// DataLayout so that we can keep them together as elements in the DenseSet.
 class ComparableFunction {
 public:
   static const ComparableFunction EmptyKey;
   static const ComparableFunction TombstoneKey;
-  static TargetData * const LookupOnly;
+  static DataLayout * const LookupOnly;
 
-  ComparableFunction(Function *Func, TargetData *TD)
+  ComparableFunction(Function *Func, DataLayout *TD)
     : Func(Func), Hash(profileFunction(Func)), TD(TD) {}
 
   Function *getFunc() const { return Func; }
   unsigned getHash() const { return Hash; }
-  TargetData *getTD() const { return TD; }
+  DataLayout *getTD() const { return TD; }
 
   // Drops AssertingVH reference to the function. Outside of debug mode, this
   // does nothing.
@@ -120,13 +129,13 @@ private:
 
   AssertingVH<Function> Func;
   unsigned Hash;
-  TargetData *TD;
+  DataLayout *TD;
 };
 
 const ComparableFunction ComparableFunction::EmptyKey = ComparableFunction(0);
 const ComparableFunction ComparableFunction::TombstoneKey =
     ComparableFunction(1);
-TargetData *const ComparableFunction::LookupOnly = (TargetData*)(-1);
+DataLayout *const ComparableFunction::LookupOnly = (DataLayout*)(-1);
 
 }
 
@@ -150,12 +159,12 @@ namespace llvm {
 namespace {
 
 /// FunctionComparator - Compares two functions to determine whether or not
-/// they will generate machine code with the same behaviour. TargetData is
+/// they will generate machine code with the same behaviour. DataLayout is
 /// used if available. The comparator always fails conservatively (erring on the
 /// side of claiming that two functions are different).
 class FunctionComparator {
 public:
-  FunctionComparator(const TargetData *TD, const Function *F1,
+  FunctionComparator(const DataLayout *TD, const Function *F1,
                      const Function *F2)
     : F1(F1), F2(F2), TD(TD) {}
 
@@ -190,7 +199,7 @@ private:
   // The two functions undergoing comparison.
   const Function *F1, *F2;
 
-  const TargetData *TD;
+  const DataLayout *TD;
 
   DenseMap<const Value *, const Value *> id_map;
   DenseSet<const Value *> seen_values;
@@ -200,18 +209,21 @@ private:
 
 // Any two pointers in the same address space are equivalent, intptr_t and
 // pointers are equivalent. Otherwise, standard type equivalence rules apply.
-bool FunctionComparator::isEquivalentType(Type *Ty1,
-                                          Type *Ty2) const {
+bool FunctionComparator::isEquivalentType(Type *Ty1, Type *Ty2) const {
+
+  PointerType *PTy1 = dyn_cast<PointerType>(Ty1);
+  PointerType *PTy2 = dyn_cast<PointerType>(Ty2);
+
+  if (TD) {
+    if (PTy1 && PTy1->getAddressSpace() == 0) Ty1 = TD->getIntPtrType(Ty1);
+    if (PTy2 && PTy2->getAddressSpace() == 0) Ty2 = TD->getIntPtrType(Ty2);
+  }
+
   if (Ty1 == Ty2)
     return true;
-  if (Ty1->getTypeID() != Ty2->getTypeID()) {
-    if (TD) {
-      LLVMContext &Ctx = Ty1->getContext();
-      if (isa<PointerType>(Ty1) && Ty2 == TD->getIntPtrType(Ctx)) return true;
-      if (isa<PointerType>(Ty2) && Ty1 == TD->getIntPtrType(Ctx)) return true;
-    }
+
+  if (Ty1->getTypeID() != Ty2->getTypeID())
     return false;
-  }
 
   switch (Ty1->getTypeID()) {
   default:
@@ -233,8 +245,7 @@ bool FunctionComparator::isEquivalentType(Type *Ty1,
     return true;
 
   case Type::PointerTyID: {
-    PointerType *PTy1 = cast<PointerType>(Ty1);
-    PointerType *PTy2 = cast<PointerType>(Ty2);
+    assert(PTy1 && PTy2 && "Both types must be pointers here.");
     return PTy1->getAddressSpace() == PTy2->getAddressSpace();
   }
 
@@ -344,16 +355,19 @@ bool FunctionComparator::isEquivalentOperation(const Instruction *I1,
 // Determine whether two GEP operations perform the same underlying arithmetic.
 bool FunctionComparator::isEquivalentGEP(const GEPOperator *GEP1,
                                          const GEPOperator *GEP2) {
-  // When we have target data, we can reduce the GEP down to the value in bytes
-  // added to the address.
-  if (TD && GEP1->hasAllConstantIndices() && GEP2->hasAllConstantIndices()) {
-    SmallVector<Value *, 8> Indices1(GEP1->idx_begin(), GEP1->idx_end());
-    SmallVector<Value *, 8> Indices2(GEP2->idx_begin(), GEP2->idx_end());
-    uint64_t Offset1 = TD->getIndexedOffset(GEP1->getPointerOperandType(),
-                                            Indices1);
-    uint64_t Offset2 = TD->getIndexedOffset(GEP2->getPointerOperandType(),
-                                            Indices2);
-    return Offset1 == Offset2;
+  unsigned AS = GEP1->getPointerAddressSpace();
+  if (AS != GEP2->getPointerAddressSpace())
+    return false;
+
+  if (TD) {
+    // When we have target data, we can reduce the GEP down to the value in bytes
+    // added to the address.
+    unsigned BitWidth = TD ? TD->getPointerSizeInBits(AS) : 1;
+    APInt Offset1(BitWidth, 0), Offset2(BitWidth, 0);
+    if (GEP1->accumulateConstantOffset(*TD, Offset1) &&
+        GEP2->accumulateConstantOffset(*TD, Offset2)) {
+      return Offset1 == Offset2;
+    }
   }
 
   if (GEP1->getPointerOperand()->getType() !=
@@ -389,7 +403,7 @@ bool FunctionComparator::enumerate(const Value *V1, const Value *V2) {
     if (!C2) return false;
     // TODO: constant expressions with GEP or references to F1 or F2.
     if (C1->isNullValue() && C2->isNullValue() &&
-	isEquivalentType(C1->getType(), C2->getType()))
+        isEquivalentType(C1->getType(), C2->getType()))
       return true;
     // Try bitcasting C2 to C1's type. If the bitcast is legal and returns C1
     // then they must have equal bit patterns.
@@ -591,8 +605,8 @@ private:
   /// to modify it.
   FnSetType FnSet;
 
-  /// TargetData for more accurate GEP comparisons. May be NULL.
-  TargetData *TD;
+  /// DataLayout for more accurate GEP comparisons. May be NULL.
+  DataLayout *TD;
 
   /// Whether or not the target supports global aliases.
   bool HasGlobalAliases;
@@ -609,7 +623,7 @@ ModulePass *llvm::createMergeFunctionsPass() {
 
 bool MergeFunctions::runOnModule(Module &M) {
   bool Changed = false;
-  TD = getAnalysisIfAvailable<TargetData>();
+  TD = getAnalysisIfAvailable<DataLayout>();
 
   for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I) {
     if (!I->isDeclaration() && !I->hasAvailableExternallyLinkage())
@@ -707,6 +721,19 @@ void MergeFunctions::writeThunkOrAlias(Function *F, Function *G) {
   writeThunk(F, G);
 }
 
+// Helper for writeThunk,
+// Selects proper bitcast operation,
+// but a bit simplier then CastInst::getCastOpcode.
+static Value* createCast(IRBuilder<false> &Builder, Value *V, Type *DestTy) {
+  Type *SrcTy = V->getType();
+  if (SrcTy->isIntegerTy() && DestTy->isPointerTy())
+    return Builder.CreateIntToPtr(V, DestTy);
+  else if (SrcTy->isPointerTy() && DestTy->isIntegerTy())
+    return Builder.CreatePtrToInt(V, DestTy);
+  else
+    return Builder.CreateBitCast(V, DestTy);
+}
+
 // Replace G with a simple tail call to bitcast(F). Also replace direct uses
 // of G with bitcast(F). Deletes G.
 void MergeFunctions::writeThunk(Function *F, Function *G) {
@@ -732,7 +759,7 @@ void MergeFunctions::writeThunk(Function *F, Function *G) {
   FunctionType *FFTy = F->getFunctionType();
   for (Function::arg_iterator AI = NewG->arg_begin(), AE = NewG->arg_end();
        AI != AE; ++AI) {
-    Args.push_back(Builder.CreateBitCast(AI, FFTy->getParamType(i)));
+    Args.push_back(createCast(Builder, (Value*)AI, FFTy->getParamType(i)));
     ++i;
   }
 
@@ -742,7 +769,7 @@ void MergeFunctions::writeThunk(Function *F, Function *G) {
   if (NewG->getReturnType()->isVoidTy()) {
     Builder.CreateRetVoid();
   } else {
-    Builder.CreateRet(Builder.CreateBitCast(CI, NewG->getReturnType()));
+    Builder.CreateRet(createCast(Builder, CI, NewG->getReturnType()));
   }
 
   NewG->copyAttributesFrom(G);
@@ -816,6 +843,18 @@ bool MergeFunctions::insert(ComparableFunction &NewF) {
   }
 
   const ComparableFunction &OldF = *Result.first;
+
+  // Don't merge tiny functions, since it can just end up making the function
+  // larger.
+  // FIXME: Should still merge them if they are unnamed_addr and produce an
+  // alias.
+  if (NewF.getFunc()->size() == 1) {
+    if (NewF.getFunc()->front().size() <= 2) {
+      DEBUG(dbgs() << NewF.getFunc()->getName()
+            << " is to small to bother merging\n");
+      return false;
+    }
+  }
 
   // Never thunk a strong function to a weak function.
   assert(!OldF.getFunc()->mayBeOverridden() ||

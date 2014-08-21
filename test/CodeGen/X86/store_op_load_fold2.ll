@@ -1,5 +1,5 @@
-; RUN: llc < %s -mtriple=i686-linux -x86-asm-syntax=att | FileCheck %s -check-prefix=ATT
-; RUN: llc < %s -mtriple=i686-linux -x86-asm-syntax=intel | FileCheck %s -check-prefix=INTEL
+; RUN: llc < %s -mtriple=i686-linux -mcpu=corei7 -x86-asm-syntax=att | FileCheck %s -check-prefix=ATT
+; RUN: llc < %s -mtriple=i686-linux -mcpu=corei7 -x86-asm-syntax=intel | FileCheck %s -check-prefix=INTEL
 
 target datalayout = "e-p:32:32"
         %struct.Macroblock = type { i32, i32, i32, i32, i32, [8 x i32], %struct.Macroblock*, %struct.Macroblock*, i32, [2 x [4 x [4 x [2 x i32]]]], [16 x i8], [16 x i8], i32, i64, [4 x i32], [4 x i32], i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i16, double, i32, i32, i32, i32, i32, i32, i32, i32, i32 }
@@ -17,10 +17,10 @@ cond_true2732.preheader:                ; preds = %entry
         store i64 %tmp2676.us.us, i64* %tmp2666
         ret i32 0
 
-; INTEL: 	and	{{E..}}, DWORD PTR [360]
-; INTEL:	and	DWORD PTR [356], {{E..}}
-; FIXME:	mov	DWORD PTR [360], {{E..}}
-; The above line comes out as 'mov 360, EAX', but when the register is ECX it works?
+; INTEL: 	and	{{e..}}, dword ptr [360]
+; INTEL:	and	dword ptr [356], {{e..}}
+; FIXME:	mov	dword ptr [360], {{e..}}
+; The above line comes out as 'mov 360, eax', but when the register is ecx it works?
 
 ; ATT: 	andl	360, %{{e..}}
 ; ATT:	andl	%{{e..}}, 356

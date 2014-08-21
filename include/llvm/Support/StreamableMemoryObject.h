@@ -8,12 +8,13 @@
 //===----------------------------------------------------------------------===//
 
 
-#ifndef STREAMABLEMEMORYOBJECT_H_
-#define STREAMABLEMEMORYOBJECT_H_
+#ifndef LLVM_SUPPORT_STREAMABLEMEMORYOBJECT_H
+#define LLVM_SUPPORT_STREAMABLEMEMORYOBJECT_H
 
 #include "llvm/ADT/OwningPtr.h"
-#include "llvm/Support/MemoryObject.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/DataStream.h"
+#include "llvm/Support/MemoryObject.h"
 #include <vector>
 
 namespace llvm {
@@ -37,7 +38,7 @@ class StreamableMemoryObject : public MemoryObject {
   /// getBase         - Returns the lowest valid address in the region.
   ///
   /// @result         - The lowest valid address.
-  virtual uint64_t getBase() const = 0;
+  virtual uint64_t getBase() const LLVM_OVERRIDE = 0;
 
   /// getExtent       - Returns the size of the region in bytes.  (The region is
   ///                   contiguous, so the highest valid address of the region
@@ -45,7 +46,7 @@ class StreamableMemoryObject : public MemoryObject {
   ///                   May block until all bytes in the stream have been read
   ///
   /// @result         - The size of the region.
-  virtual uint64_t getExtent() const = 0;
+  virtual uint64_t getExtent() const LLVM_OVERRIDE = 0;
 
   /// readByte        - Tries to read a single byte from the region.
   ///                   May block until (address - base) bytes have been read
@@ -53,7 +54,7 @@ class StreamableMemoryObject : public MemoryObject {
   /// @param ptr      - A pointer to a byte to be filled in.  Must be non-NULL.
   /// @result         - 0 if successful; -1 if not.  Failure may be due to a
   ///                   bounds violation or an implementation-specific error.
-  virtual int readByte(uint64_t address, uint8_t* ptr) const = 0;
+  virtual int readByte(uint64_t address, uint8_t *ptr) const LLVM_OVERRIDE = 0;
 
   /// readBytes       - Tries to read a contiguous range of bytes from the
   ///                   region, up to the end of the region.
@@ -64,17 +65,14 @@ class StreamableMemoryObject : public MemoryObject {
   ///
   /// @param address  - The address of the first byte, in the same space as
   ///                   getBase().
-  /// @param size     - The maximum number of bytes to copy.
+  /// @param size     - The number of bytes to copy.
   /// @param buf      - A pointer to a buffer to be filled in.  Must be non-NULL
   ///                   and large enough to hold size bytes.
-  /// @param copied   - A pointer to a nunber that is filled in with the number
-  ///                   of bytes actually read.  May be NULL.
   /// @result         - 0 if successful; -1 if not.  Failure may be due to a
   ///                   bounds violation or an implementation-specific error.
   virtual int readBytes(uint64_t address,
                         uint64_t size,
-                        uint8_t* buf,
-                        uint64_t* copied) const = 0;
+                        uint8_t *buf) const LLVM_OVERRIDE = 0;
 
   /// getPointer  - Ensures that the requested data is in memory, and returns
   ///               A pointer to it. More efficient than using readBytes if the
@@ -107,14 +105,14 @@ class StreamableMemoryObject : public MemoryObject {
 class StreamingMemoryObject : public StreamableMemoryObject {
 public:
   StreamingMemoryObject(DataStreamer *streamer);
-  virtual uint64_t getBase() const { return 0; }
-  virtual uint64_t getExtent() const;
-  virtual int readByte(uint64_t address, uint8_t* ptr) const;
+  virtual uint64_t getBase() const LLVM_OVERRIDE { return 0; }
+  virtual uint64_t getExtent() const LLVM_OVERRIDE;
+  virtual int readByte(uint64_t address, uint8_t *ptr) const LLVM_OVERRIDE;
   virtual int readBytes(uint64_t address,
                         uint64_t size,
-                        uint8_t* buf,
-                        uint64_t* copied) const ;
-  virtual const uint8_t *getPointer(uint64_t address, uint64_t size) const {
+                        uint8_t *buf) const LLVM_OVERRIDE;
+  virtual const uint8_t *getPointer(uint64_t address,
+                                    uint64_t size) const LLVM_OVERRIDE {
     // This could be fixed by ensuring the bytes are fetched and making a copy,
     // requiring that the bitcode size be known, or otherwise ensuring that
     // the memory doesn't go away/get reallocated, but it's
@@ -122,8 +120,8 @@ public:
     assert(0 && "getPointer in streaming memory objects not allowed");
     return NULL;
   }
-  virtual bool isValidAddress(uint64_t address) const;
-  virtual bool isObjectEnd(uint64_t address) const;
+  virtual bool isValidAddress(uint64_t address) const LLVM_OVERRIDE;
+  virtual bool isObjectEnd(uint64_t address) const LLVM_OVERRIDE;
 
   /// Drop s bytes from the front of the stream, pushing the positions of the
   /// remaining bytes down by s. This is used to skip past the bitcode header,
@@ -170,8 +168,8 @@ private:
     return true;
   }
 
-  StreamingMemoryObject(const StreamingMemoryObject&);  // DO NOT IMPLEMENT
-  void operator=(const StreamingMemoryObject&);  // DO NOT IMPLEMENT
+  StreamingMemoryObject(const StreamingMemoryObject&) LLVM_DELETED_FUNCTION;
+  void operator=(const StreamingMemoryObject&) LLVM_DELETED_FUNCTION;
 };
 
 StreamableMemoryObject *getNonStreamedMemoryObject(

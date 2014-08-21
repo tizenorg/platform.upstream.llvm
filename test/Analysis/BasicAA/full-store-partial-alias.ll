@@ -1,5 +1,5 @@
-; RUN: opt -S -tbaa -basicaa -gvn < %s | grep {ret i32 %}
-; RUN: opt -S -tbaa -gvn < %s | grep {ret i32 0}
+; RUN: opt -S -tbaa -basicaa -gvn < %s | FileCheck -check-prefix=BASICAA %s
+; RUN: opt -S -tbaa -gvn < %s | FileCheck %s
 ; rdar://8875631, rdar://8875069
 
 ; BasicAA should notice that the store stores to the entire %u object,
@@ -14,6 +14,8 @@ target datalayout = "e-p:64:64:64"
 @endianness_test = global i64 1, align 8
 
 define i32 @signbit(double %x) nounwind {
+; BASICAA: ret i32 %tmp5.lobit
+; CHECK:   ret i32 0
 entry:
   %u = alloca %union.anon, align 8
   %tmp9 = getelementptr inbounds %union.anon* %u, i64 0, i32 0
@@ -27,7 +29,9 @@ entry:
   ret i32 %tmp5.lobit
 }
 
-!0 = metadata !{metadata !"double", metadata !1}
+!0 = metadata !{metadata !4, metadata !4, i64 0}
 !1 = metadata !{metadata !"omnipotent char", metadata !2}
 !2 = metadata !{metadata !"Simple C/C++ TBAA", null}
-!3 = metadata !{metadata !"int", metadata !1}
+!3 = metadata !{metadata !5, metadata !5, i64 0}
+!4 = metadata !{metadata !"double", metadata !1}
+!5 = metadata !{metadata !"int", metadata !1}

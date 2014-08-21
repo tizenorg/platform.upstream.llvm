@@ -7,21 +7,30 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This pass loops over all of the functions in the input module, looking for a
-// main function.  If a main function is found, all other functions and all
-// global variables with initializers are marked as internal.
+// This pass loops over all of the functions and variables in the input module.
+// If the function or variable is not in the list of external names given to
+// the pass it is marked as internal.
+//
+// This transformation would not be legal in a regular compilation, but it gets
+// extra information from the linker about what is safe.
+//
+// For example: Internalizing a function with external linkage. Only if we are
+// told it is only used from within this module, it is safe to do it.
 //
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "internalize"
-#include "llvm/Analysis/CallGraph.h"
 #include "llvm/Transforms/IPO.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/CallGraph.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
-#include "llvm/Module.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/ADT/Statistic.h"
+#include "llvm/Transforms/Utils/GlobalStatus.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <fstream>
 #include <set>
 using namespace llvm;
@@ -45,13 +54,10 @@ APIList("internalize-public-api-list", cl::value_desc("list"),
 namespace {
   class InternalizePass : public ModulePass {
     std::set<std::string> ExternalNames;
-    /// If no api symbols were specified and a main function is defined,
-    /// assume the main function is the only API
-    bool AllButMain;
   public:
     static char ID; // Pass identification, replacement for typeid
-    explicit InternalizePass(bool AllButMain = true);
-    explicit InternalizePass(const std::vector <const char *>& exportList);
+    explicit InternalizePass();
+    explicit InternalizePass(ArrayRef<const char *> ExportList);
     void LoadFile(const char *Filename);
     virtual bool runOnModule(Module &M);
 
@@ -66,20 +72,19 @@ char InternalizePass::ID = 0;
 INITIALIZE_PASS(InternalizePass, "internalize",
                 "Internalize Global Symbols", false, false)
 
-InternalizePass::InternalizePass(bool AllButMain)
-  : ModulePass(ID), AllButMain(AllButMain){
+InternalizePass::InternalizePass()
+  : ModulePass(ID) {
   initializeInternalizePassPass(*PassRegistry::getPassRegistry());
   if (!APIFile.empty())           // If a filename is specified, use it.
     LoadFile(APIFile.c_str());
-  if (!APIList.empty())           // If a list is specified, use it as well.
-    ExternalNames.insert(APIList.begin(), APIList.end());
+  ExternalNames.insert(APIList.begin(), APIList.end());
 }
 
-InternalizePass::InternalizePass(const std::vector<const char *>&exportList)
-  : ModulePass(ID), AllButMain(false){
+InternalizePass::InternalizePass(ArrayRef<const char *> ExportList)
+  : ModulePass(ID){
   initializeInternalizePassPass(*PassRegistry::getPassRegistry());
-  for(std::vector<const char *>::const_iterator itr = exportList.begin();
-        itr != exportList.end(); itr++) {
+  for(ArrayRef<const char *>::const_iterator itr = ExportList.begin();
+        itr != ExportList.end(); itr++) {
     ExternalNames.insert(*itr);
   }
 }
@@ -100,48 +105,66 @@ void InternalizePass::LoadFile(const char *Filename) {
   }
 }
 
+static bool shouldInternalize(const GlobalValue &GV,
+                              const std::set<std::string> &ExternalNames) {
+  // Function must be defined here
+  if (GV.isDeclaration())
+    return false;
+
+  // Available externally is really just a "declaration with a body".
+  if (GV.hasAvailableExternallyLinkage())
+    return false;
+
+  // Already has internal linkage
+  if (GV.hasLocalLinkage())
+    return false;
+
+  // Marked to keep external?
+  if (ExternalNames.count(GV.getName()))
+    return false;
+
+  return true;
+}
+
 bool InternalizePass::runOnModule(Module &M) {
   CallGraph *CG = getAnalysisIfAvailable<CallGraph>();
   CallGraphNode *ExternalNode = CG ? CG->getExternalCallingNode() : 0;
-  
-  if (ExternalNames.empty()) {
-    // Return if we're not in 'all but main' mode and have no external api
-    if (!AllButMain)
-      return false;
-    // If no list or file of symbols was specified, check to see if there is a
-    // "main" symbol defined in the module.  If so, use it, otherwise do not
-    // internalize the module, it must be a library or something.
-    //
-    Function *MainFunc = M.getFunction("main");
-    if (MainFunc == 0 || MainFunc->isDeclaration())
-      return false;  // No main found, must be a library...
-
-    // Preserve main, internalize all else.
-    ExternalNames.insert(MainFunc->getName());
-  }
-
   bool Changed = false;
 
-  // Never internalize functions which code-gen might insert.
-  // FIXME: We should probably add this (and the __stack_chk_guard) via some
-  // type of call-back in CodeGen.
-  ExternalNames.insert("__stack_chk_fail");
+  SmallPtrSet<GlobalValue *, 8> Used;
+  collectUsedGlobalVariables(M, Used, false);
+
+  // We must assume that globals in llvm.used have a reference that not even
+  // the linker can see, so we don't internalize them.
+  // For llvm.compiler.used the situation is a bit fuzzy. The assembler and
+  // linker can drop those symbols. If this pass is running as part of LTO,
+  // one might think that it could just drop llvm.compiler.used. The problem
+  // is that even in LTO llvm doesn't see every reference. For example,
+  // we don't see references from function local inline assembly. To be
+  // conservative, we internalize symbols in llvm.compiler.used, but we
+  // keep llvm.compiler.used so that the symbol is not deleted by llvm.
+  for (SmallPtrSet<GlobalValue *, 8>::iterator I = Used.begin(), E = Used.end();
+       I != E; ++I) {
+    GlobalValue *V = *I;
+    ExternalNames.insert(V->getName());
+  }
 
   // Mark all functions not in the api as internal.
   // FIXME: maybe use private linkage?
-  for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I)
-    if (!I->isDeclaration() &&         // Function must be defined here
-        // Available externally is really just a "declaration with a body".
-        !I->hasAvailableExternallyLinkage() &&
-        !I->hasLocalLinkage() &&  // Can't already have internal linkage
-        !ExternalNames.count(I->getName())) {// Not marked to keep external?
-      I->setLinkage(GlobalValue::InternalLinkage);
+  for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I) {
+    if (!shouldInternalize(*I, ExternalNames))
+      continue;
+
+    I->setLinkage(GlobalValue::InternalLinkage);
+
+    if (ExternalNode)
       // Remove a callgraph edge from the external node to this function.
-      if (ExternalNode) ExternalNode->removeOneAbstractEdgeTo((*CG)[I]);
-      Changed = true;
-      ++NumFunctions;
-      DEBUG(dbgs() << "Internalizing func " << I->getName() << "\n");
-    }
+      ExternalNode->removeOneAbstractEdgeTo((*CG)[I]);
+
+    Changed = true;
+    ++NumFunctions;
+    DEBUG(dbgs() << "Internalizing func " << I->getName() << "\n");
+  }
 
   // Never internalize the llvm.used symbol.  It is used to implement
   // attribute((used)).
@@ -156,43 +179,44 @@ bool InternalizePass::runOnModule(Module &M) {
   ExternalNames.insert("llvm.global.annotations");
 
   // Never internalize symbols code-gen inserts.
+  // FIXME: We should probably add this (and the __stack_chk_guard) via some
+  // type of call-back in CodeGen.
+  ExternalNames.insert("__stack_chk_fail");
   ExternalNames.insert("__stack_chk_guard");
 
   // Mark all global variables with initializers that are not in the api as
   // internal as well.
   // FIXME: maybe use private linkage?
   for (Module::global_iterator I = M.global_begin(), E = M.global_end();
-       I != E; ++I)
-    if (!I->isDeclaration() && !I->hasLocalLinkage() &&
-        // Available externally is really just a "declaration with a body".
-        !I->hasAvailableExternallyLinkage() &&
-        !ExternalNames.count(I->getName())) {
-      I->setLinkage(GlobalValue::InternalLinkage);
-      Changed = true;
-      ++NumGlobals;
-      DEBUG(dbgs() << "Internalized gvar " << I->getName() << "\n");
-    }
+       I != E; ++I) {
+    if (!shouldInternalize(*I, ExternalNames))
+      continue;
+
+    I->setLinkage(GlobalValue::InternalLinkage);
+    Changed = true;
+    ++NumGlobals;
+    DEBUG(dbgs() << "Internalized gvar " << I->getName() << "\n");
+  }
 
   // Mark all aliases that are not in the api as internal as well.
   for (Module::alias_iterator I = M.alias_begin(), E = M.alias_end();
-       I != E; ++I)
-    if (!I->isDeclaration() && !I->hasInternalLinkage() &&
-        // Available externally is really just a "declaration with a body".
-        !I->hasAvailableExternallyLinkage() &&
-        !ExternalNames.count(I->getName())) {
-      I->setLinkage(GlobalValue::InternalLinkage);
-      Changed = true;
-      ++NumAliases;
-      DEBUG(dbgs() << "Internalized alias " << I->getName() << "\n");
-    }
+       I != E; ++I) {
+    if (!shouldInternalize(*I, ExternalNames))
+      continue;
+
+    I->setLinkage(GlobalValue::InternalLinkage);
+    Changed = true;
+    ++NumAliases;
+    DEBUG(dbgs() << "Internalized alias " << I->getName() << "\n");
+  }
 
   return Changed;
 }
 
-ModulePass *llvm::createInternalizePass(bool AllButMain) {
-  return new InternalizePass(AllButMain);
+ModulePass *llvm::createInternalizePass() {
+  return new InternalizePass();
 }
 
-ModulePass *llvm::createInternalizePass(const std::vector <const char *> &el) {
-  return new InternalizePass(el);
+ModulePass *llvm::createInternalizePass(ArrayRef<const char *> ExportList) {
+  return new InternalizePass(ExportList);
 }

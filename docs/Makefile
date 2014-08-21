@@ -8,7 +8,7 @@
 ##===----------------------------------------------------------------------===##
 
 LEVEL      := ..
-DIRS       := CommandGuide tutorial
+DIRS       :=
 
 ifdef BUILD_FOR_WEBSITE
 PROJ_OBJ_DIR = .
@@ -19,17 +19,21 @@ $(PROJ_OBJ_DIR)/doxygen.cfg: doxygen.cfg.in
 	  -e 's/@abs_top_srcdir@/../g' \
 	  -e 's/@DOT@/dot/g' \
 	  -e 's/@PACKAGE_VERSION@/mainline/' \
-	  -e 's/@abs_top_builddir@/../g' > $@
+	  -e 's/@abs_top_builddir@/../g' \
+	  -e 's/@enable_searchengine@/NO/g' \
+	  -e 's/@searchengine_url@//g' \
+	  -e 's/@enable_server_based_search@/NO/g' \
+	  -e 's/@enable_external_search@/NO/g' \
+	  -e 's/@extra_search_mappings@//g' > $@
 endif
 
 include $(LEVEL)/Makefile.common
 
 HTML       := $(wildcard $(PROJ_SRC_DIR)/*.html) \
               $(wildcard $(PROJ_SRC_DIR)/*.css)
-IMAGES     := $(wildcard $(PROJ_SRC_DIR)/img/*.*)
 DOXYFILES  := doxygen.cfg.in doxygen.css doxygen.footer doxygen.header \
               doxygen.intro
-EXTRA_DIST := $(HTML) $(DOXYFILES) llvm.css CommandGuide img
+EXTRA_DIST := $(HTML) $(DOXYFILES) llvm.css CommandGuide
 
 .PHONY: install-html install-doxygen doxygen install-ocamldoc ocamldoc generated
 
@@ -56,9 +60,7 @@ generated:: $(generated_targets)
 install-html: $(PROJ_OBJ_DIR)/html.tar.gz
 	$(Echo) Installing HTML documentation
 	$(Verb) $(MKDIR) $(DESTDIR)$(PROJ_docsdir)/html
-	$(Verb) $(MKDIR) $(DESTDIR)$(PROJ_docsdir)/html/img
 	$(Verb) $(DataInstall) $(HTML) $(DESTDIR)$(PROJ_docsdir)/html
-	$(Verb) $(DataInstall) $(IMAGES) $(DESTDIR)$(PROJ_docsdir)/html/img
 	$(Verb) $(DataInstall) $(PROJ_OBJ_DIR)/html.tar.gz $(DESTDIR)$(PROJ_docsdir)
 
 $(PROJ_OBJ_DIR)/html.tar.gz: $(HTML)
@@ -80,9 +82,7 @@ doxygen: regendoc $(PROJ_OBJ_DIR)/doxygen.tar.gz
 
 regendoc:
 	$(Echo) Building doxygen documentation
-	$(Verb) if test -e $(PROJ_OBJ_DIR)/doxygen ; then \
-	  $(RM) -rf $(PROJ_OBJ_DIR)/doxygen ; \
-	fi
+	$(Verb) $(RM) -rf $(PROJ_OBJ_DIR)/doxygen
 	$(Verb) $(DOXYGEN) $(PROJ_OBJ_DIR)/doxygen.cfg
 
 $(PROJ_OBJ_DIR)/doxygen.tar.gz: $(DOXYFILES) $(PROJ_OBJ_DIR)/doxygen.cfg
@@ -116,9 +116,7 @@ ocamldoc: regen-ocamldoc
 
 regen-ocamldoc:
 	$(Echo) Building ocamldoc documentation
-	$(Verb) if test -e $(PROJ_OBJ_DIR)/ocamldoc ; then \
-		$(RM) -rf $(PROJ_OBJ_DIR)/ocamldoc ; \
-	fi
+	$(Verb) $(RM) -rf $(PROJ_OBJ_DIR)/ocamldoc
 	$(Verb) $(MAKE) -C $(LEVEL)/bindings/ocaml ocamldoc
 	$(Verb) $(MKDIR) $(PROJ_OBJ_DIR)/ocamldoc/html
 	$(Verb) \

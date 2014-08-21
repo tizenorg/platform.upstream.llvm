@@ -6,7 +6,7 @@ define internal i32 @callee1(i32 %A, i32 %B) {
 }
 
 define i32 @caller1() {
-; CHECK: define i32 @caller1
+; CHECK-LABEL: define i32 @caller1(
 ; CHECK-NEXT: ret i32 3
 
   %X = call i32 @callee1( i32 10, i32 3 )
@@ -21,7 +21,7 @@ define i32 @caller2() {
 ; inline and be cheap. We should eventually do that and lower the threshold here
 ; to 1.
 ;
-; CHECK: @caller2
+; CHECK-LABEL: @caller2(
 ; CHECK-NOT: call void @callee2
 ; CHECK: ret
 
@@ -61,7 +61,7 @@ define i32 @caller3() {
 ; it doesn't count toward the inline cost when constant-prop proves those paths
 ; dead.
 ;
-; CHECK: @caller3
+; CHECK-LABEL: @caller3(
 ; CHECK-NOT: call
 ; CHECK: ret i32 6
 
@@ -109,4 +109,173 @@ bb.merge:
 
 bb.false:
   ret i32 %sub
+}
+
+declare {i8, i1} @llvm.uadd.with.overflow.i8(i8 %a, i8 %b)
+
+define i8 @caller4(i8 %z) {
+; Check that we can constant fold through intrinsics such as the
+; overflow-detecting arithmetic instrinsics. These are particularly important
+; as they are used heavily in standard library code and generic C++ code where
+; the arguments are oftent constant but complete generality is required.
+;
+; CHECK-LABEL: @caller4(
+; CHECK-NOT: call
+; CHECK: ret i8 -1
+
+entry:
+  %x = call i8 @callee4(i8 254, i8 14, i8 %z)
+  ret i8 %x
+}
+
+define i8 @callee4(i8 %x, i8 %y, i8 %z) {
+  %uadd = call {i8, i1} @llvm.uadd.with.overflow.i8(i8 %x, i8 %y)
+  %o = extractvalue {i8, i1} %uadd, 1
+  br i1 %o, label %bb.true, label %bb.false
+
+bb.true:
+  ret i8 -1
+
+bb.false:
+  ; This block musn't be counted in the inline cost.
+  %z1 = add i8 %z, 1
+  %z2 = add i8 %z1, 1
+  %z3 = add i8 %z2, 1
+  %z4 = add i8 %z3, 1
+  %z5 = add i8 %z4, 1
+  %z6 = add i8 %z5, 1
+  %z7 = add i8 %z6, 1
+  %z8 = add i8 %z7, 1
+  ret i8 %z8
+}
+
+define i64 @caller5(i64 %y) {
+; Check that we can round trip constants through various kinds of casts etc w/o
+; losing track of the constant prop in the inline cost analysis.
+;
+; CHECK-LABEL: @caller5(
+; CHECK-NOT: call
+; CHECK: ret i64 -1
+
+entry:
+  %x = call i64 @callee5(i64 42, i64 %y)
+  ret i64 %x
+}
+
+define i64 @callee5(i64 %x, i64 %y) {
+  %inttoptr = inttoptr i64 %x to i8*
+  %bitcast = bitcast i8* %inttoptr to i32*
+  %ptrtoint = ptrtoint i32* %bitcast to i64
+  %trunc = trunc i64 %ptrtoint to i32
+  %zext = zext i32 %trunc to i64
+  %cmp = icmp eq i64 %zext, 42
+  br i1 %cmp, label %bb.true, label %bb.false
+
+bb.true:
+  ret i64 -1
+
+bb.false:
+  ; This block musn't be counted in the inline cost.
+  %y1 = add i64 %y, 1
+  %y2 = add i64 %y1, 1
+  %y3 = add i64 %y2, 1
+  %y4 = add i64 %y3, 1
+  %y5 = add i64 %y4, 1
+  %y6 = add i64 %y5, 1
+  %y7 = add i64 %y6, 1
+  %y8 = add i64 %y7, 1
+  ret i64 %y8
+}
+
+define float @caller6() {
+; Check that we can constant-prop through fcmp instructions
+;
+; CHECK-LABEL: @caller6(
+; CHECK-NOT: call
+; CHECK: ret
+  %x = call float @callee6(float 42.0)
+  ret float %x
+}
+
+define float @callee6(float %x) {
+  %icmp = fcmp ugt float %x, 42.0
+  br i1 %icmp, label %bb.true, label %bb.false
+
+bb.true:
+  ; This block musn't be counted in the inline cost.
+  %x1 = fadd float %x, 1.0
+  %x2 = fadd float %x1, 1.0
+  %x3 = fadd float %x2, 1.0
+  %x4 = fadd float %x3, 1.0
+  %x5 = fadd float %x4, 1.0
+  %x6 = fadd float %x5, 1.0
+  %x7 = fadd float %x6, 1.0
+  %x8 = fadd float %x7, 1.0
+  ret float %x8
+
+bb.false:
+  ret float %x
+}
+
+
+
+define i32 @PR13412.main() {
+; This is a somewhat complicated three layer subprogram that was reported to
+; compute the wrong value for a branch due to assuming that an argument
+; mid-inline couldn't be equal to another pointer.
+;
+; After inlining, the branch should point directly to the exit block, not to
+; the intermediate block.
+; CHECK: @PR13412.main
+; CHECK: br i1 true, label %[[TRUE_DEST:.*]], label %[[FALSE_DEST:.*]]
+; CHECK: [[FALSE_DEST]]:
+; CHECK-NEXT: call void @PR13412.fail()
+; CHECK: [[TRUE_DEST]]:
+; CHECK-NEXT: ret i32 0
+
+entry:
+  %i1 = alloca i64
+  store i64 0, i64* %i1
+  %arraydecay = bitcast i64* %i1 to i32*
+  %call = call i1 @PR13412.first(i32* %arraydecay, i32* %arraydecay)
+  br i1 %call, label %cond.end, label %cond.false
+
+cond.false:
+  call void @PR13412.fail()
+  br label %cond.end
+
+cond.end:
+  ret i32 0
+}
+
+define internal i1 @PR13412.first(i32* %a, i32* %b) {
+entry:
+  %call = call i32* @PR13412.second(i32* %a, i32* %b)
+  %cmp = icmp eq i32* %call, %b
+  ret i1 %cmp
+}
+
+declare void @PR13412.fail()
+
+define internal i32* @PR13412.second(i32* %a, i32* %b) {
+entry:
+  %sub.ptr.lhs.cast = ptrtoint i32* %b to i64
+  %sub.ptr.rhs.cast = ptrtoint i32* %a to i64
+  %sub.ptr.sub = sub i64 %sub.ptr.lhs.cast, %sub.ptr.rhs.cast
+  %sub.ptr.div = ashr exact i64 %sub.ptr.sub, 2
+  %cmp = icmp ugt i64 %sub.ptr.div, 1
+  br i1 %cmp, label %if.then, label %if.end3
+
+if.then:
+  %0 = load i32* %a
+  %1 = load i32* %b
+  %cmp1 = icmp eq i32 %0, %1
+  br i1 %cmp1, label %return, label %if.end3
+
+if.end3:
+  br label %return
+
+return:
+  %retval.0 = phi i32* [ %b, %if.end3 ], [ %a, %if.then ]
+  ret i32* %retval.0
 }

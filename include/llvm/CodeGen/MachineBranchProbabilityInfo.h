@@ -1,5 +1,4 @@
-
-//==- MachineBranchProbabilityInfo.h - Machine Branch Probability Analysis -==//
+//=- MachineBranchProbabilityInfo.h - Branch Probability Analysis -*- C++ -*-=//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -15,14 +14,12 @@
 #ifndef LLVM_CODEGEN_MACHINEBRANCHPROBABILITYINFO_H
 #define LLVM_CODEGEN_MACHINEBRANCHPROBABILITYINFO_H
 
+#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/BranchProbability.h"
 #include <climits>
 
 namespace llvm {
-
-class raw_ostream;
-class MachineBasicBlock;
 
 class MachineBranchProbabilityInfo : public ImmutablePass {
   virtual void anchor();
@@ -51,6 +48,11 @@ public:
   // DEFAULT_WEIGHT.
   uint32_t getEdgeWeight(const MachineBasicBlock *Src,
                          const MachineBasicBlock *Dst) const;
+
+  // Same thing, but using a const_succ_iterator from Src. This is faster when
+  // the iterator is already available.
+  uint32_t getEdgeWeight(const MachineBasicBlock *Src,
+                         MachineBasicBlock::const_succ_iterator Dst) const;
 
   // Get sum of the block successors' weights, potentially scaling them to fit
   // within 32-bits. If scaling is required, sets Scale based on the necessary

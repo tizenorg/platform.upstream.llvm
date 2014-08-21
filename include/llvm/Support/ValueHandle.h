@@ -16,10 +16,11 @@
 
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/PointerIntPair.h"
-#include "llvm/Value.h"
+#include "llvm/IR/Value.h"
 
 namespace llvm {
 class ValueHandleBase;
+template<typename From> struct simplify_type;
 
 // ValueHandleBase** is only 4-byte aligned.
 template<>
@@ -59,8 +60,8 @@ private:
   // pair. The 'setValPtrInt' and 'getValPtrInt' methods below give them this
   // access.
   PointerIntPair<Value*, 2> VP;
-  
-  explicit ValueHandleBase(const ValueHandleBase&); // DO NOT IMPLEMENT.
+
+  ValueHandleBase(const ValueHandleBase&) LLVM_DELETED_FUNCTION;
 public:
   explicit ValueHandleBase(HandleBaseKind Kind)
     : PrevPair(0, Kind), Next(0), VP(0, 0) {}
@@ -110,11 +111,12 @@ protected:
            V != DenseMapInfo<Value *>::getTombstoneKey();
   }
 
-private:
+public:
   // Callbacks made from Value.
   static void ValueIsDeleted(Value *V);
   static void ValueIsRAUWd(Value *Old, Value *New);
 
+private:
   // Internal implementation details.
   ValueHandleBase **getPrevPtr() const { return PrevPair.getPointer(); }
   HandleBaseKind getKind() const { return PrevPair.getInt(); }
@@ -161,14 +163,12 @@ public:
 
 // Specialize simplify_type to allow WeakVH to participate in
 // dyn_cast, isa, etc.
-template<typename From> struct simplify_type;
-template<> struct simplify_type<const WeakVH> {
+template<> struct simplify_type<WeakVH> {
   typedef Value* SimpleType;
-  static SimpleType getSimplifiedValue(const WeakVH &WVH) {
-    return static_cast<Value *>(WVH);
+  static SimpleType getSimplifiedValue(WeakVH &WVH) {
+    return WVH;
   }
 };
-template<> struct simplify_type<WeakVH> : public simplify_type<const WeakVH> {};
 
 /// AssertingVH - This is a Value Handle that points to a value and asserts out
 /// if the value is destroyed while the handle is still live.  This is very
@@ -234,18 +234,6 @@ public:
   ValueTy *operator->() const { return getValPtr(); }
   ValueTy &operator*() const { return *getValPtr(); }
 };
-
-// Specialize simplify_type to allow AssertingVH to participate in
-// dyn_cast, isa, etc.
-template<typename From> struct simplify_type;
-template<> struct simplify_type<const AssertingVH<Value> > {
-  typedef Value* SimpleType;
-  static SimpleType getSimplifiedValue(const AssertingVH<Value> &AVH) {
-    return static_cast<Value *>(AVH);
-  }
-};
-template<> struct simplify_type<AssertingVH<Value> >
-  : public simplify_type<const AssertingVH<Value> > {};
 
 // Specialize DenseMapInfo to allow AssertingVH to participate in DenseMap.
 template<typename T>
@@ -344,18 +332,6 @@ public:
   ValueTy &operator*() const { return *getValPtr(); }
 };
 
-// Specialize simplify_type to allow TrackingVH to participate in
-// dyn_cast, isa, etc.
-template<typename From> struct simplify_type;
-template<> struct simplify_type<const TrackingVH<Value> > {
-  typedef Value* SimpleType;
-  static SimpleType getSimplifiedValue(const TrackingVH<Value> &AVH) {
-    return static_cast<Value *>(AVH);
-  }
-};
-template<> struct simplify_type<TrackingVH<Value> >
-  : public simplify_type<const TrackingVH<Value> > {};
-
 /// CallbackVH - This is a value handle that allows subclasses to define
 /// callbacks that run when the underlying Value has RAUW called on it or is
 /// destroyed.  This class can be used as the key of a map, as long as the user
@@ -363,11 +339,12 @@ template<> struct simplify_type<TrackingVH<Value> >
 /// rearrange itself when the pointer changes).  Unlike ValueHandleBase, this
 /// class has a vtable and a virtual destructor.
 class CallbackVH : public ValueHandleBase {
+  virtual void anchor();
 protected:
   CallbackVH(const CallbackVH &RHS)
     : ValueHandleBase(Callback, RHS) {}
 
-  virtual ~CallbackVH();
+  virtual ~CallbackVH() {}
 
   void setValPtr(Value *P) {
     ValueHandleBase::operator=(P);
@@ -389,9 +366,7 @@ public:
   ///
   /// All implementations must remove the reference from this object to the
   /// Value that's being destroyed.
-  virtual void deleted() {
-    setValPtr(NULL);
-  }
+  virtual void deleted() { setValPtr(NULL); }
 
   /// Called when this->getValPtr()->replaceAllUsesWith(new_value) is called,
   /// _before_ any of the uses have actually been replaced.  If WeakVH were
@@ -399,18 +374,6 @@ public:
   /// setValPtr(new_value).  AssertingVH would do nothing in this method.
   virtual void allUsesReplacedWith(Value *) {}
 };
-
-// Specialize simplify_type to allow CallbackVH to participate in
-// dyn_cast, isa, etc.
-template<typename From> struct simplify_type;
-template<> struct simplify_type<const CallbackVH> {
-  typedef Value* SimpleType;
-  static SimpleType getSimplifiedValue(const CallbackVH &CVH) {
-    return static_cast<Value *>(CVH);
-  }
-};
-template<> struct simplify_type<CallbackVH>
-  : public simplify_type<const CallbackVH> {};
 
 } // End llvm namespace
 

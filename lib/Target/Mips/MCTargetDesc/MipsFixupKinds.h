@@ -95,6 +95,78 @@ namespace Mips {
     // PC relative branch fixup resulting in - R_MIPS_PC16
     fixup_Mips_Branch_PCRel,
 
+    // resulting in - R_MIPS_GPREL16/R_MIPS_SUB/R_MIPS_HI16
+    fixup_Mips_GPOFF_HI,
+
+    // resulting in - R_MIPS_GPREL16/R_MIPS_SUB/R_MIPS_LO16
+    fixup_Mips_GPOFF_LO,
+
+    // resulting in - R_MIPS_PAGE
+    fixup_Mips_GOT_PAGE,
+
+    // resulting in - R_MIPS_GOT_OFST
+    fixup_Mips_GOT_OFST,
+
+    // resulting in - R_MIPS_GOT_DISP
+    fixup_Mips_GOT_DISP,
+
+    // resulting in - R_MIPS_GOT_HIGHER
+    fixup_Mips_HIGHER,
+
+    // resulting in - R_MIPS_HIGHEST
+    fixup_Mips_HIGHEST,
+
+    // resulting in - R_MIPS_GOT_HI16
+    fixup_Mips_GOT_HI16,
+
+    // resulting in - R_MIPS_GOT_LO16
+    fixup_Mips_GOT_LO16,
+
+    // resulting in - R_MIPS_CALL_HI16
+    fixup_Mips_CALL_HI16,
+
+    // resulting in - R_MIPS_CALL_LO16
+    fixup_Mips_CALL_LO16,
+
+    // resulting in - R_MICROMIPS_26_S1
+    fixup_MICROMIPS_26_S1,
+
+    // resulting in - R_MICROMIPS_HI16
+    fixup_MICROMIPS_HI16,
+
+    // resulting in - R_MICROMIPS_LO16
+    fixup_MICROMIPS_LO16,
+
+    // resulting in - R_MICROMIPS_GOT16
+    fixup_MICROMIPS_GOT16,
+
+    // resulting in - R_MICROMIPS_PC16_S1
+    fixup_MICROMIPS_PC16_S1,
+
+    // resulting in - R_MICROMIPS_CALL16
+    fixup_MICROMIPS_CALL16,
+
+    // resulting in - R_MICROMIPS_GOT_DISP
+    fixup_MICROMIPS_GOT_DISP,
+
+    // resulting in - R_MICROMIPS_GOT_PAGE
+    fixup_MICROMIPS_GOT_PAGE,
+
+    // resulting in - R_MICROMIPS_GOT_OFST
+    fixup_MICROMIPS_GOT_OFST,
+
+    // resulting in - R_MICROMIPS_TLS_DTPREL_HI16
+    fixup_MICROMIPS_TLS_DTPREL_HI16,
+
+    // resulting in - R_MICROMIPS_TLS_DTPREL_LO16
+    fixup_MICROMIPS_TLS_DTPREL_LO16,
+
+    // resulting in - R_MICROMIPS_TLS_TPREL_HI16
+    fixup_MICROMIPS_TLS_TPREL_HI16,
+
+    // resulting in - R_MICROMIPS_TLS_TPREL_LO16
+    fixup_MICROMIPS_TLS_TPREL_LO16,
+
     // Marker
     LastTargetFixupKind,
     NumTargetFixupKinds = LastTargetFixupKind - FirstTargetFixupKind

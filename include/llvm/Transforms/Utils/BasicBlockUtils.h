@@ -12,21 +12,23 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_TRANSFORMS_UTILS_BASICBLOCK_H
-#define LLVM_TRANSFORMS_UTILS_BASICBLOCK_H
+#ifndef LLVM_TRANSFORMS_UTILS_BASICBLOCKUTILS_H
+#define LLVM_TRANSFORMS_UTILS_BASICBLOCKUTILS_H
 
 // FIXME: Move to this file: BasicBlock::removePredecessor, BB::splitBasicBlock
 
-#include "llvm/BasicBlock.h"
+#include "llvm/IR/BasicBlock.h"
 #include "llvm/Support/CFG.h"
-#include "llvm/Support/DebugLoc.h"
 
 namespace llvm {
 
 class AliasAnalysis;
 class Instruction;
+class MDNode;
 class Pass;
 class ReturnInst;
+class TargetLibraryInfo;
+class TerminatorInst;
 
 /// DeleteDeadBlock - Delete the specified block, which must have no
 /// predecessors.
@@ -44,7 +46,7 @@ void FoldSingleEntryPHINodes(BasicBlock *BB, Pass *P = 0);
 /// a result. This includes tracing the def-use list from the PHI to see if
 /// it is ultimately unused or if it reaches an unused cycle. Return true
 /// if any PHIs were deleted.
-bool DeleteDeadPHIs(BasicBlock *BB);
+bool DeleteDeadPHIs(BasicBlock *BB, const TargetLibraryInfo *TLI = 0);
 
 /// MergeBlockIntoPredecessor - Attempts to merge a block into its predecessor,
 /// if possible.  The return value indicates success or failure.
@@ -67,28 +69,6 @@ void ReplaceInstWithInst(BasicBlock::InstListType &BIL,
 // instruction specified by To.
 //
 void ReplaceInstWithInst(Instruction *From, Instruction *To);
-
-/// FindFunctionBackedges - Analyze the specified function to find all of the
-/// loop backedges in the function and return them.  This is a relatively cheap
-/// (compared to computing dominators and loop info) analysis.
-///
-/// The output is added to Result, as pairs of <from,to> edge info.
-void FindFunctionBackedges(const Function &F,
-      SmallVectorImpl<std::pair<const BasicBlock*,const BasicBlock*> > &Result);
-
-
-/// GetSuccessorNumber - Search for the specified successor of basic block BB
-/// and return its position in the terminator instruction's list of
-/// successors.  It is an error to call this with a block that is not a
-/// successor.
-unsigned GetSuccessorNumber(BasicBlock *BB, BasicBlock *Succ);
-
-/// isCriticalEdge - Return true if the specified edge is a critical edge.
-/// Critical edges are edges from a block with multiple successors to a block
-/// with multiple predecessors.
-///
-bool isCriticalEdge(const TerminatorInst *TI, unsigned SuccNum,
-                    bool AllowIdenticalEdges = false);
 
 /// SplitCriticalEdge - If this edge is a critical edge, insert a new node to
 /// split the critical edge.  This will update DominatorTree and
@@ -202,10 +182,38 @@ void SplitLandingPadPredecessors(BasicBlock *OrigBB,ArrayRef<BasicBlock*> Preds,
 ReturnInst *FoldReturnIntoUncondBranch(ReturnInst *RI, BasicBlock *BB,
                                        BasicBlock *Pred);
 
-/// GetFirstDebugLocInBasicBlock - Return first valid DebugLoc entry in a
-/// given basic block.
-DebugLoc GetFirstDebugLocInBasicBlock(const BasicBlock *BB);
+/// SplitBlockAndInsertIfThen - Split the containing block at the
+/// specified instruction - everything before and including Cmp stays
+/// in the old basic block, and everything after Cmp is moved to a
+/// new block. The two blocks are connected by a conditional branch
+/// (with value of Cmp being the condition).
+/// Before:
+///   Head
+///   Cmp
+///   Tail
+/// After:
+///   Head
+///   Cmp
+///   if (Cmp)
+///     ThenBlock
+///   Tail
+///
+/// If Unreachable is true, then ThenBlock ends with
+/// UnreachableInst, otherwise it branches to Tail.
+/// Returns the NewBasicBlock's terminator.
 
+TerminatorInst *SplitBlockAndInsertIfThen(Instruction *Cmp,
+    bool Unreachable, MDNode *BranchWeights = 0);
+
+///
+/// GetIfCondition - Check whether BB is the merge point of a if-region.
+/// If so, return the boolean condition that determines which entry into
+/// BB will be taken.  Also, return by references the block that will be
+/// entered from if the condition is true, and the block that will be
+/// entered if the condition is false.
+
+Value *GetIfCondition(BasicBlock *BB, BasicBlock *&IfTrue,
+		      BasicBlock *&IfFalse);
 } // End llvm namespace
 
 #endif

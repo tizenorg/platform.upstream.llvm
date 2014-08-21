@@ -19,17 +19,18 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-  
-#define INSTRUCTION_SPECIFIER_FIELDS
+
+#define INSTRUCTION_SPECIFIER_FIELDS \
+  uint16_t operands;
 
 #define INSTRUCTION_IDS     \
-  unsigned instructionIDs;
+  uint16_t instructionIDs;
 
 #include "X86DisassemblerDecoderCommon.h"
-  
+
 #undef INSTRUCTION_SPECIFIER_FIELDS
 #undef INSTRUCTION_IDS
-  
+
 /*
  * Accessor functions for various fields of an Intel instruction
  */
@@ -43,7 +44,7 @@ extern "C" {
 #define rFromREX(rex)        (((rex) & 0x4) >> 2)
 #define xFromREX(rex)        (((rex) & 0x2) >> 1)
 #define bFromREX(rex)        ((rex) & 0x1)
-    
+
 #define rFromVEX2of3(vex)       (((~(vex)) & 0x80) >> 7)
 #define xFromVEX2of3(vex)       (((~(vex)) & 0x40) >> 6)
 #define bFromVEX2of3(vex)       (((~(vex)) & 0x20) >> 5)
@@ -57,6 +58,15 @@ extern "C" {
 #define vvvvFromVEX2of2(vex)    (((~(vex)) & 0x78) >> 3)
 #define lFromVEX2of2(vex)       (((vex) & 0x4) >> 2)
 #define ppFromVEX2of2(vex)      ((vex) & 0x3)
+
+#define rFromXOP2of3(xop)       (((~(xop)) & 0x80) >> 7)
+#define xFromXOP2of3(xop)       (((~(xop)) & 0x40) >> 6)
+#define bFromXOP2of3(xop)       (((~(xop)) & 0x20) >> 5)
+#define mmmmmFromXOP2of3(xop)   ((xop) & 0x1f)
+#define wFromXOP3of3(xop)       (((xop) & 0x80) >> 7)
+#define vvvvFromXOP3of3(vex)    (((~(vex)) & 0x78) >> 3)
+#define lFromXOP3of3(xop)       (((xop) & 0x4) >> 2)
+#define ppFromXOP3of3(xop)      ((xop) & 0x3)
 
 /*
  * These enums represent Intel registers for use by the decoder.
@@ -218,7 +228,23 @@ extern "C" {
   ENTRY(XMM12)    \
   ENTRY(XMM13)    \
   ENTRY(XMM14)    \
-  ENTRY(XMM15)
+  ENTRY(XMM15)    \
+  ENTRY(XMM16)    \
+  ENTRY(XMM17)    \
+  ENTRY(XMM18)    \
+  ENTRY(XMM19)    \
+  ENTRY(XMM20)    \
+  ENTRY(XMM21)    \
+  ENTRY(XMM22)    \
+  ENTRY(XMM23)    \
+  ENTRY(XMM24)    \
+  ENTRY(XMM25)    \
+  ENTRY(XMM26)    \
+  ENTRY(XMM27)    \
+  ENTRY(XMM28)    \
+  ENTRY(XMM29)    \
+  ENTRY(XMM30)    \
+  ENTRY(XMM31)
 
 #define REGS_YMM  \
   ENTRY(YMM0)     \
@@ -236,8 +262,58 @@ extern "C" {
   ENTRY(YMM12)    \
   ENTRY(YMM13)    \
   ENTRY(YMM14)    \
-  ENTRY(YMM15)
-    
+  ENTRY(YMM15)    \
+  ENTRY(YMM16)    \
+  ENTRY(YMM17)    \
+  ENTRY(YMM18)    \
+  ENTRY(YMM19)    \
+  ENTRY(YMM20)    \
+  ENTRY(YMM21)    \
+  ENTRY(YMM22)    \
+  ENTRY(YMM23)    \
+  ENTRY(YMM24)    \
+  ENTRY(YMM25)    \
+  ENTRY(YMM26)    \
+  ENTRY(YMM27)    \
+  ENTRY(YMM28)    \
+  ENTRY(YMM29)    \
+  ENTRY(YMM30)    \
+  ENTRY(YMM31)
+
+#define REGS_ZMM  \
+  ENTRY(ZMM0)     \
+  ENTRY(ZMM1)     \
+  ENTRY(ZMM2)     \
+  ENTRY(ZMM3)     \
+  ENTRY(ZMM4)     \
+  ENTRY(ZMM5)     \
+  ENTRY(ZMM6)     \
+  ENTRY(ZMM7)     \
+  ENTRY(ZMM8)     \
+  ENTRY(ZMM9)     \
+  ENTRY(ZMM10)    \
+  ENTRY(ZMM11)    \
+  ENTRY(ZMM12)    \
+  ENTRY(ZMM13)    \
+  ENTRY(ZMM14)    \
+  ENTRY(ZMM15)    \
+  ENTRY(ZMM16)    \
+  ENTRY(ZMM17)    \
+  ENTRY(ZMM18)    \
+  ENTRY(ZMM19)    \
+  ENTRY(ZMM20)    \
+  ENTRY(ZMM21)    \
+  ENTRY(ZMM22)    \
+  ENTRY(ZMM23)    \
+  ENTRY(ZMM24)    \
+  ENTRY(ZMM25)    \
+  ENTRY(ZMM26)    \
+  ENTRY(ZMM27)    \
+  ENTRY(ZMM28)    \
+  ENTRY(ZMM29)    \
+  ENTRY(ZMM30)    \
+  ENTRY(ZMM31)
+
 #define REGS_SEGMENT \
   ENTRY(ES)          \
   ENTRY(CS)          \
@@ -245,7 +321,7 @@ extern "C" {
   ENTRY(DS)          \
   ENTRY(FS)          \
   ENTRY(GS)
-  
+
 #define REGS_DEBUG  \
   ENTRY(DR0)        \
   ENTRY(DR1)        \
@@ -266,12 +342,12 @@ extern "C" {
   ENTRY(CR6)          \
   ENTRY(CR7)          \
   ENTRY(CR8)
-  
+
 #define ALL_EA_BASES  \
   EA_BASES_16BIT      \
   EA_BASES_32BIT      \
   EA_BASES_64BIT
-  
+
 #define ALL_SIB_BASES \
   REGS_32BIT          \
   REGS_64BIT
@@ -284,13 +360,14 @@ extern "C" {
   REGS_MMX            \
   REGS_XMM            \
   REGS_YMM            \
+  REGS_ZMM            \
   REGS_SEGMENT        \
   REGS_DEBUG          \
   REGS_CONTROL        \
   ENTRY(RIP)
 
 /*
- * EABase - All possible values of the base field for effective-address 
+ * EABase - All possible values of the base field for effective-address
  *   computations, a.k.a. the Mod and R/M fields of the ModR/M byte.  We
  *   distinguish between bases (EA_BASE_*) and registers that just happen to be
  *   referred to when Mod == 0b11 (EA_REG_*).
@@ -305,20 +382,24 @@ typedef enum {
 #undef ENTRY
   EA_max
 } EABase;
-  
-/* 
+
+/*
  * SIBIndex - All possible values of the SIB index field.
  *   Borrows entries from ALL_EA_BASES with the special case that
  *   sib is synonymous with NONE.
+ * Vector SIB: index can be XMM or YMM.
  */
 typedef enum {
   SIB_INDEX_NONE,
 #define ENTRY(x) SIB_INDEX_##x,
   ALL_EA_BASES
+  REGS_XMM
+  REGS_YMM
+  REGS_ZMM
 #undef ENTRY
   SIB_INDEX_max
 } SIBIndex;
-  
+
 /*
  * SIBBase - All possible values of the SIB base field.
  */
@@ -350,7 +431,7 @@ typedef enum {
 #undef ENTRY
   MODRM_REG_max
 } Reg;
-  
+
 /*
  * SegmentOverride - All possible segment overrides.
  */
@@ -364,7 +445,7 @@ typedef enum {
   SEG_OVERRIDE_GS,
   SEG_OVERRIDE_max
 } SegmentOverride;
-    
+
 /*
  * VEXLeadingOpcodeByte - Possible values for the VEX.m-mmmm field
  */
@@ -374,6 +455,12 @@ typedef enum {
   VEX_LOB_0F38 = 0x2,
   VEX_LOB_0F3A = 0x3
 } VEXLeadingOpcodeByte;
+
+typedef enum {
+  XOP_MAP_SELECT_8 = 0x8,
+  XOP_MAP_SELECT_9 = 0x9,
+  XOP_MAP_SELECT_A = 0xA
+} XOPMapSelect;
 
 /*
  * VEXPrefixCode - Possible values for the VEX.pp field
@@ -385,6 +472,13 @@ typedef enum {
   VEX_PREFIX_F3 = 0x2,
   VEX_PREFIX_F2 = 0x3
 } VEXPrefixCode;
+
+typedef enum {
+  TYPE_NO_VEX_XOP = 0x0,
+  TYPE_VEX_2B = 0x1,
+  TYPE_VEX_3B = 0x2,
+  TYPE_XOP = 0x3
+} VEXXOPType;
 
 typedef uint8_t BOOL;
 
@@ -399,7 +493,7 @@ typedef uint8_t BOOL;
  *                  be read from.
  * @return        - -1 if the byte cannot be read for any reason; 0 otherwise.
  */
-typedef int (*byteReader_t)(void* arg, uint8_t* byte, uint64_t address);
+typedef int (*byteReader_t)(const void* arg, uint8_t* byte, uint64_t address);
 
 /*
  * dlog_t - Type for the logging function that the consumer can provide to
@@ -418,7 +512,7 @@ struct InternalInstruction {
   /* Reader interface (C) */
   byteReader_t reader;
   /* Opaque value passed to the reader */
-  void* readerArg;
+  const void* readerArg;
   /* The address of the next byte to read via the reader */
   uint64_t readerCursor;
 
@@ -428,24 +522,24 @@ struct InternalInstruction {
   void* dlogArg;
 
   /* General instruction information */
-  
+
   /* The mode to disassemble for (64-bit, protected, real) */
   DisassemblerMode mode;
   /* The start of the instruction, usable with the reader */
   uint64_t startLocation;
   /* The length of the instruction, in bytes */
   size_t length;
-  
+
   /* Prefix state */
-  
+
   /* 1 if the prefix byte corresponding to the entry is present; 0 if not */
   uint8_t prefixPresent[0x100];
   /* contains the location (for use with the reader) of the prefix byte */
   uint64_t prefixLocations[0x100];
-  /* The value of the VEX prefix, if present */
-  uint8_t vexPrefix[3];
+  /* The value of the VEX/XOP prefix, if present */
+  uint8_t vexXopPrefix[3];
   /* The length of the VEX prefix (0 if not present) */
-  uint8_t vexSize;
+  VEXXOPType vexXopType;
   /* The value of the REX prefix, if present */
   uint8_t rexPrefix;
   /* The location where a mandatory prefix would have to be (i.e., right before
@@ -453,7 +547,9 @@ struct InternalInstruction {
   uint64_t necessaryPrefixLocation;
   /* The segment override type */
   SegmentOverride segmentOverride;
-  
+  /* 1 if the prefix byte, 0xf2 or 0xf3 is xacquire or xrelease */
+  BOOL xAcquireRelease;
+
   /* Sizes of various critical pieces of data, in bytes */
   uint8_t registerSize;
   uint8_t addressSize;
@@ -464,27 +560,23 @@ struct InternalInstruction {
      needed to find relocation entries for adding symbolic operands */
   uint8_t displacementOffset;
   uint8_t immediateOffset;
-  
+
   /* opcode state */
-  
-  /* The value of the two-byte escape prefix (usually 0x0f) */
-  uint8_t twoByteEscape;
-  /* The value of the three-byte escape prefix (usually 0x38 or 0x3a) */
-  uint8_t threeByteEscape;
+
   /* The last byte of the opcode, not counting any ModR/M extension */
   uint8_t opcode;
   /* The ModR/M byte of the instruction, if it is an opcode extension */
   uint8_t modRMExtension;
-  
+
   /* decode state */
-  
+
   /* The type of opcode, used for indexing into the array of decode tables */
   OpcodeType opcodeType;
   /* The instruction ID, extracted from the decode table */
   uint16_t instructionID;
   /* The specifier for the instruction, from the instruction info table */
   const struct InstructionSpecifier *spec;
-  
+
   /* state for additional bytes, consumed during operand decode.  Pattern:
      consumed___ indicates that the byte was already consumed and does not
      need to be consumed again */
@@ -492,12 +584,12 @@ struct InternalInstruction {
   /* The VEX.vvvv field, which contains a third register operand for some AVX
      instructions */
   Reg                           vvvv;
-  
+
   /* The ModR/M byte, which contains most register operands and some portion of
      all memory operands */
   BOOL                          consumedModRM;
   uint8_t                       modRM;
-  
+
   /* The SIB byte, used for more complex 32- or 64-bit memory operands */
   BOOL                          consumedSIB;
   uint8_t                       sib;
@@ -505,19 +597,19 @@ struct InternalInstruction {
   /* The displacement, used for memory operands */
   BOOL                          consumedDisplacement;
   int32_t                       displacement;
-  
+
   /* Immediates.  There can be two in some cases */
   uint8_t                       numImmediatesConsumed;
   uint8_t                       numImmediatesTranslated;
   uint64_t                      immediates[2];
-  
+
   /* A register or immediate operand encoded into the opcode */
   BOOL                          consumedOpcodeModifier;
   uint8_t                       opcodeModifier;
   Reg                           opcodeRegister;
-  
+
   /* Portions of the ModR/M byte */
-  
+
   /* These fields determine the allowable values for the ModR/M fields, which
      depend on operand and address widths */
   EABase                        eaBaseBase;
@@ -530,11 +622,13 @@ struct InternalInstruction {
   EADisplacement                eaDisplacement;
   /* The reg field always encodes a register */
   Reg                           reg;
-  
+
   /* SIB state */
   SIBIndex                      sibIndex;
   uint8_t                       sibScale;
   SIBBase                       sibBase;
+
+  const struct OperandSpecifier *operands;
 };
 
 /* decodeInstruction - Decode one instruction and store the decoding results in
@@ -555,10 +649,10 @@ struct InternalInstruction {
  */
 int decodeInstruction(struct InternalInstruction* insn,
                       byteReader_t reader,
-                      void* readerArg,
+                      const void* readerArg,
                       dlog_t logger,
                       void* loggerArg,
-                      void* miiArg,
+                      const void* miiArg,
                       uint64_t startLoc,
                       DisassemblerMode mode);
 
@@ -568,15 +662,15 @@ int decodeInstruction(struct InternalInstruction* insn,
  * @param line  - The line number that printed the debug message.
  * @param s     - The message to print.
  */
-  
+
 void x86DisassemblerDebug(const char *file,
                           unsigned line,
                           const char *s);
 
-const char *x86DisassemblerGetInstrName(unsigned Opcode, void *mii);
+const char *x86DisassemblerGetInstrName(unsigned Opcode, const void *mii);
 
-#ifdef __cplusplus 
+#ifdef __cplusplus
 }
 #endif
-  
+
 #endif

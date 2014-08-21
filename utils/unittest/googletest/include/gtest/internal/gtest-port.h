@@ -230,7 +230,7 @@
 # define GTEST_OS_MAC 1
 #elif defined __linux__
 # define GTEST_OS_LINUX 1
-# ifdef ANDROID
+# if defined(ANDROID) || defined(__ANDROID__)
 #  define GTEST_OS_LINUX_ANDROID 1
 # endif  // ANDROID
 #elif defined __MVS__
@@ -1116,7 +1116,7 @@ class Notification {
 // problem.
 class ThreadWithParamBase {
  public:
-  virtual ~ThreadWithParamBase() {}
+  virtual ~ThreadWithParamBase();
   virtual void Run() = 0;
 };
 
@@ -1290,7 +1290,7 @@ typedef GTestMutexLock MutexLock;
 // ThreadLocalValueHolderBase.
 class ThreadLocalValueHolderBase {
  public:
-  virtual ~ThreadLocalValueHolderBase() {}
+  virtual ~ThreadLocalValueHolderBase();
 };
 
 // Called by pthread to delete thread-local data stored by

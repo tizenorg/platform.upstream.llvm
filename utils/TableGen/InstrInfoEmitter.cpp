@@ -12,14 +12,65 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "InstrInfoEmitter.h"
+
+#include "CodeGenDAGPatterns.h"
+#include "CodeGenSchedule.h"
 #include "CodeGenTarget.h"
 #include "SequenceToOffsetTable.h"
-#include "llvm/TableGen/Record.h"
+#include "TableGenBackends.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/TableGen/Error.h"
+#include "llvm/TableGen/Record.h"
+#include "llvm/TableGen/TableGenBackend.h"
 #include <algorithm>
 #include <cstdio>
+#include <map>
+#include <vector>
 using namespace llvm;
+
+namespace {
+class InstrInfoEmitter {
+  RecordKeeper &Records;
+  CodeGenDAGPatterns CDP;
+  const CodeGenSchedModels &SchedModels;
+
+public:
+  InstrInfoEmitter(RecordKeeper &R):
+    Records(R), CDP(R), SchedModels(CDP.getTargetInfo().getSchedModels()) {}
+
+  // run - Output the instruction set description.
+  void run(raw_ostream &OS);
+
+private:
+  void emitEnums(raw_ostream &OS);
+
+  typedef std::map<std::vector<std::string>, unsigned> OperandInfoMapTy;
+
+  /// The keys of this map are maps which have OpName enum values as their keys
+  /// and instruction operand indices as their values.  The values of this map
+  /// are lists of instruction names.
+  typedef std::map<std::map<unsigned, unsigned>,
+                   std::vector<std::string> > OpNameMapTy;
+  typedef std::map<std::string, unsigned>::iterator StrUintMapIter;
+  void emitRecord(const CodeGenInstruction &Inst, unsigned Num,
+                  Record *InstrInfo,
+                  std::map<std::vector<Record*>, unsigned> &EL,
+                  const OperandInfoMapTy &OpInfo,
+                  raw_ostream &OS);
+  void emitOperandTypesEnum(raw_ostream &OS, const CodeGenTarget &Target);
+  void initOperandMapData(
+             const std::vector<const CodeGenInstruction *> NumberedInstructions,
+             const std::string &Namespace,
+             std::map<std::string, unsigned> &Operands,
+             OpNameMapTy &OperandMap);
+  void emitOperandNameMappings(raw_ostream &OS, const CodeGenTarget &Target,
+            const std::vector<const CodeGenInstruction*> &NumberedInstructions);
+
+  // Operand information.
+  void EmitOperandInfo(raw_ostream &OS, OperandInfoMapTy &OperandInfoIDs);
+  std::vector<std::string> GetOperandInfo(const CodeGenInstruction &Inst);
+};
+} // End anonymous namespace
 
 static void PrintDefList(const std::vector<Record*> &Uses,
                          unsigned Num, raw_ostream &OS) {
@@ -27,23 +78,6 @@ static void PrintDefList(const std::vector<Record*> &Uses,
   for (unsigned i = 0, e = Uses.size(); i != e; ++i)
     OS << getQualifiedName(Uses[i]) << ", ";
   OS << "0 };\n";
-}
-
-//===----------------------------------------------------------------------===//
-// Instruction Itinerary Information.
-//===----------------------------------------------------------------------===//
-
-void InstrInfoEmitter::GatherItinClasses() {
-  std::vector<Record*> DefList =
-  Records.getAllDerivedDefinitions("InstrItinClass");
-  std::sort(DefList.begin(), DefList.end(), LessRecord());
-
-  for (unsigned i = 0, N = DefList.size(); i < N; i++)
-    ItinClassMap[DefList[i]->getName()] = i;
-}
-
-unsigned InstrInfoEmitter::getItinClassNumber(const Record *InstRec) {
-  return ItinClassMap[InstRec->getValueAsDef("Itinerary")->getName()];
 }
 
 //===----------------------------------------------------------------------===//
@@ -72,7 +106,7 @@ InstrInfoEmitter::GetOperandInfo(const CodeGenInstruction &Inst) {
       for (unsigned j = 0, e = Inst.Operands[i].MINumOperands; j != e; ++j) {
         OperandList.push_back(Inst.Operands[i]);
 
-        Record *OpR = dynamic_cast<DefInit*>(MIOI->getArg(j))->getDef();
+        Record *OpR = cast<DefInit>(MIOI->getArg(j))->getDef();
         OperandList.back().Rec = OpR;
       }
     }
@@ -99,8 +133,8 @@ InstrInfoEmitter::GetOperandInfo(const CodeGenInstruction &Inst) {
         Res += "|(1<<MCOI::LookupPtrRegClass)";
 
       // Predicate operands.  Check to see if the original unexpanded operand
-      // was of type PredicateOperand.
-      if (Inst.Operands[i].Rec->isSubClassOf("PredicateOperand"))
+      // was of type PredicateOp.
+      if (Inst.Operands[i].Rec->isSubClassOf("PredicateOp"))
         Res += "|(1<<MCOI::Predicate)";
 
       // Optional def operands.  Check to see if the original unexpanded operand
@@ -157,17 +191,165 @@ void InstrInfoEmitter::EmitOperandInfo(raw_ostream &OS,
   }
 }
 
+
+/// Initialize data structures for generating operand name mappings.
+/// 
+/// \param Operands [out] A map used to generate the OpName enum with operand
+///        names as its keys and operand enum values as its values.
+/// \param OperandMap [out] A map for representing the operand name mappings for
+///        each instructions.  This is used to generate the OperandMap table as
+///        well as the getNamedOperandIdx() function.
+void InstrInfoEmitter::initOperandMapData(
+        const std::vector<const CodeGenInstruction *> NumberedInstructions,
+        const std::string &Namespace,
+        std::map<std::string, unsigned> &Operands,
+        OpNameMapTy &OperandMap) {
+
+  unsigned NumOperands = 0;
+  for (unsigned i = 0, e = NumberedInstructions.size(); i != e; ++i) {
+    const CodeGenInstruction *Inst = NumberedInstructions[i];
+    if (!Inst->TheDef->getValueAsBit("UseNamedOperandTable")) {
+      continue;
+    }
+    std::map<unsigned, unsigned> OpList;
+    for (unsigned j = 0, je = Inst->Operands.size(); j != je; ++j) {
+      const CGIOperandList::OperandInfo &Info = Inst->Operands[j];
+      StrUintMapIter I = Operands.find(Info.Name);
+
+      if (I == Operands.end()) {
+        I = Operands.insert(Operands.begin(),
+                    std::pair<std::string, unsigned>(Info.Name, NumOperands++));
+      }
+      OpList[I->second] = Info.MIOperandNo;
+    }
+    OperandMap[OpList].push_back(Namespace + "::" + Inst->TheDef->getName());
+  }
+}
+
+/// Generate a table and function for looking up the indices of operands by
+/// name.
+///
+/// This code generates:
+/// - An enum in the llvm::TargetNamespace::OpName namespace, with one entry
+///   for each operand name.
+/// - A 2-dimensional table called OperandMap for mapping OpName enum values to
+///   operand indices.
+/// - A function called getNamedOperandIdx(uint16_t Opcode, uint16_t NamedIdx)
+///   for looking up the operand index for an instruction, given a value from
+///   OpName enum
+void InstrInfoEmitter::emitOperandNameMappings(raw_ostream &OS,
+           const CodeGenTarget &Target,
+           const std::vector<const CodeGenInstruction*> &NumberedInstructions) {
+
+  const std::string &Namespace = Target.getInstNamespace();
+  std::string OpNameNS = "OpName";
+  // Map of operand names to their enumeration value.  This will be used to
+  // generate the OpName enum.
+  std::map<std::string, unsigned> Operands;
+  OpNameMapTy OperandMap;
+
+  initOperandMapData(NumberedInstructions, Namespace, Operands, OperandMap);
+
+  OS << "#ifdef GET_INSTRINFO_OPERAND_ENUM\n";
+  OS << "#undef GET_INSTRINFO_OPERAND_ENUM\n";
+  OS << "namespace llvm {";
+  OS << "namespace " << Namespace << " {\n";
+  OS << "namespace " << OpNameNS << " { \n";
+  OS << "enum {\n";
+  for (StrUintMapIter i = Operands.begin(), e = Operands.end(); i != e; ++i)
+    OS << "  " << i->first << " = " << i->second << ",\n";
+
+  OS << "OPERAND_LAST";
+  OS << "\n};\n";
+  OS << "} // End namespace OpName\n";
+  OS << "} // End namespace " << Namespace << "\n";
+  OS << "} // End namespace llvm\n";
+  OS << "#endif //GET_INSTRINFO_OPERAND_ENUM\n";
+
+  OS << "#ifdef GET_INSTRINFO_NAMED_OPS\n";
+  OS << "#undef GET_INSTRINFO_NAMED_OPS\n";
+  OS << "namespace llvm {";
+  OS << "namespace " << Namespace << " {\n";
+  OS << "int16_t getNamedOperandIdx(uint16_t Opcode, uint16_t NamedIdx) {\n";
+  if (!Operands.empty()) {
+    OS << "  static const int16_t OperandMap [][" << Operands.size()
+       << "] = {\n";
+    for (OpNameMapTy::iterator i = OperandMap.begin(), e = OperandMap.end();
+                                                       i != e; ++i) {
+      const std::map<unsigned, unsigned> &OpList = i->first;
+      OS << "{";
+
+      // Emit a row of the OperandMap table
+      for (unsigned ii = 0, ie = Operands.size(); ii != ie; ++ii)
+        OS << (OpList.count(ii) == 0 ? -1 : (int)OpList.find(ii)->second)
+           << ", ";
+
+      OS << "},\n";
+    }
+    OS << "};\n";
+
+    OS << "  switch(Opcode) {\n";
+    unsigned TableIndex = 0;
+    for (OpNameMapTy::iterator i = OperandMap.begin(), e = OperandMap.end();
+                                                       i != e; ++i) {
+      std::vector<std::string> &OpcodeList = i->second;
+
+      for (unsigned ii = 0, ie = OpcodeList.size(); ii != ie; ++ii)
+        OS << "  case " << OpcodeList[ii] << ":\n";
+
+      OS << "    return OperandMap[" << TableIndex++ << "][NamedIdx];\n";
+    }
+    OS << "    default: return -1;\n";
+    OS << "  }\n";
+  } else {
+    // There are no operands, so no need to emit anything
+    OS << "  return -1;\n";
+  }
+  OS << "}\n";
+  OS << "} // End namespace " << Namespace << "\n";
+  OS << "} // End namespace llvm\n";
+  OS << "#endif //GET_INSTRINFO_NAMED_OPS\n";
+
+}
+
+/// Generate an enum for all the operand types for this target, under the
+/// llvm::TargetNamespace::OpTypes namespace.
+/// Operand types are all definitions derived of the Operand Target.td class.
+void InstrInfoEmitter::emitOperandTypesEnum(raw_ostream &OS,
+                                            const CodeGenTarget &Target) {
+
+  const std::string &Namespace = Target.getInstNamespace();
+  std::vector<Record *> Operands = Records.getAllDerivedDefinitions("Operand");
+
+  OS << "\n#ifdef GET_INSTRINFO_OPERAND_TYPES_ENUM\n";
+  OS << "#undef GET_INSTRINFO_OPERAND_TYPES_ENUM\n";
+  OS << "namespace llvm {";
+  OS << "namespace " << Namespace << " {\n";
+  OS << "namespace OpTypes { \n";
+  OS << "enum OperandType {\n";
+
+  for (unsigned oi = 0, oe = Operands.size(); oi != oe; ++oi) {
+    if (!Operands[oi]->isAnonymous())
+      OS << "  " << Operands[oi]->getName() << " = " << oi << ",\n";
+  }
+
+  OS << "  OPERAND_TYPE_LIST_END" << "\n};\n";
+  OS << "} // End namespace OpTypes\n";
+  OS << "} // End namespace " << Namespace << "\n";
+  OS << "} // End namespace llvm\n";
+  OS << "#endif // GET_INSTRINFO_OPERAND_TYPES_ENUM\n";
+}
+
 //===----------------------------------------------------------------------===//
 // Main Output.
 //===----------------------------------------------------------------------===//
 
 // run - Emit the main instruction description records for the target...
 void InstrInfoEmitter::run(raw_ostream &OS) {
+  emitSourceFileHeader("Target Instruction Enum Values", OS);
   emitEnums(OS);
 
-  GatherItinClasses();
-
-  EmitSourceFileHeader("Target Instruction Descriptors", OS);
+  emitSourceFileHeader("Target Instruction Descriptors", OS);
 
   OS << "\n#ifdef GET_INSTRINFO_MC_DESC\n";
   OS << "#undef GET_INSTRINFO_MC_DESC\n";
@@ -253,28 +435,34 @@ void InstrInfoEmitter::run(raw_ostream &OS) {
 
   std::string ClassName = TargetName + "GenInstrInfo";
   OS << "namespace llvm {\n";
-  OS << "struct " << ClassName << " : public TargetInstrInfoImpl {\n"
+  OS << "struct " << ClassName << " : public TargetInstrInfo {\n"
      << "  explicit " << ClassName << "(int SO = -1, int DO = -1);\n"
+     << "  virtual ~" << ClassName << "();\n"
      << "};\n";
   OS << "} // End llvm namespace \n";
 
   OS << "#endif // GET_INSTRINFO_HEADER\n\n";
 
-  OS << "\n#ifdef GET_INSTRINFO_CTOR\n";
-  OS << "#undef GET_INSTRINFO_CTOR\n";
+  OS << "\n#ifdef GET_INSTRINFO_CTOR_DTOR\n";
+  OS << "#undef GET_INSTRINFO_CTOR_DTOR\n";
 
   OS << "namespace llvm {\n";
   OS << "extern const MCInstrDesc " << TargetName << "Insts[];\n";
   OS << "extern const unsigned " << TargetName << "InstrNameIndices[];\n";
   OS << "extern const char " << TargetName << "InstrNameData[];\n";
   OS << ClassName << "::" << ClassName << "(int SO, int DO)\n"
-     << "  : TargetInstrInfoImpl(SO, DO) {\n"
+     << "  : TargetInstrInfo(SO, DO) {\n"
      << "  InitMCInstrInfo(" << TargetName << "Insts, "
      << TargetName << "InstrNameIndices, " << TargetName << "InstrNameData, "
-     << NumberedInstructions.size() << ");\n}\n";
+     << NumberedInstructions.size() << ");\n}\n"
+     << ClassName << "::~" << ClassName << "() {}\n";
   OS << "} // End llvm namespace \n";
 
-  OS << "#endif // GET_INSTRINFO_CTOR\n\n";
+  OS << "#endif // GET_INSTRINFO_CTOR_DTOR\n\n";
+
+  emitOperandNameMappings(OS, Target, NumberedInstructions);
+
+  emitOperandTypesEnum(OS, Target);
 }
 
 void InstrInfoEmitter::emitRecord(const CodeGenInstruction &Inst, unsigned Num,
@@ -283,7 +471,7 @@ void InstrInfoEmitter::emitRecord(const CodeGenInstruction &Inst, unsigned Num,
                                   const OperandInfoMapTy &OpInfo,
                                   raw_ostream &OS) {
   int MinOperands = 0;
-  if (!Inst.Operands.size() == 0)
+  if (!Inst.Operands.empty())
     // Each logical operand can be multiple MI operands.
     MinOperands = Inst.Operands.back().MIOperandNo +
                   Inst.Operands.back().MINumOperands;
@@ -291,7 +479,7 @@ void InstrInfoEmitter::emitRecord(const CodeGenInstruction &Inst, unsigned Num,
   OS << "  { ";
   OS << Num << ",\t" << MinOperands << ",\t"
      << Inst.Operands.NumDefs << ",\t"
-     << getItinClassNumber(Inst.TheDef) << ",\t"
+     << SchedModels.getSchedClassIdx(Inst) << ",\t"
      << Inst.TheDef->getValueAsInt("Size") << ",\t0";
 
   // Emit all of the target indepedent flags...
@@ -302,6 +490,7 @@ void InstrInfoEmitter::emitRecord(const CodeGenInstruction &Inst, unsigned Num,
   if (Inst.isCompare)          OS << "|(1<<MCID::Compare)";
   if (Inst.isMoveImm)          OS << "|(1<<MCID::MoveImm)";
   if (Inst.isBitcast)          OS << "|(1<<MCID::Bitcast)";
+  if (Inst.isSelect)           OS << "|(1<<MCID::Select)";
   if (Inst.isBarrier)          OS << "|(1<<MCID::Barrier)";
   if (Inst.hasDelaySlot)       OS << "|(1<<MCID::DelaySlot)";
   if (Inst.isCall)             OS << "|(1<<MCID::Call)";
@@ -325,13 +514,14 @@ void InstrInfoEmitter::emitRecord(const CodeGenInstruction &Inst, unsigned Num,
 
   // Emit all of the target-specific flags...
   BitsInit *TSF = Inst.TheDef->getValueAsBitsInit("TSFlags");
-  if (!TSF) throw "no TSFlags?";
+  if (!TSF)
+    PrintFatalError("no TSFlags?");
   uint64_t Value = 0;
   for (unsigned i = 0, e = TSF->getNumBits(); i != e; ++i) {
-    if (BitInit *Bit = dynamic_cast<BitInit*>(TSF->getBit(i)))
+    if (BitInit *Bit = dyn_cast<BitInit>(TSF->getBit(i)))
       Value |= uint64_t(Bit->getValue()) << i;
     else
-      throw "Invalid TSFlags bit in " + Inst.TheDef->getName();
+      PrintFatalError("Invalid TSFlags bit in " + Inst.TheDef->getName());
   }
   OS << ", 0x";
   OS.write_hex(Value);
@@ -357,12 +547,24 @@ void InstrInfoEmitter::emitRecord(const CodeGenInstruction &Inst, unsigned Num,
   else
     OS << "OperandInfo" << OpInfo.find(OperandInfo)->second;
 
+  CodeGenTarget &Target = CDP.getTargetInfo();
+  if (Inst.HasComplexDeprecationPredicate)
+    // Emit a function pointer to the complex predicate method.
+    OS << ",0"
+       << ",&get" << Inst.DeprecatedReason << "DeprecationInfo";
+  else if (!Inst.DeprecatedReason.empty())
+    // Emit the Subtarget feature.
+    OS << "," << Target.getInstNamespace() << "::" << Inst.DeprecatedReason
+       << ",0";
+  else
+    // Instruction isn't deprecated.
+    OS << ",0,0";
+
   OS << " },  // Inst #" << Num << " = " << Inst.TheDef->getName() << "\n";
 }
 
 // emitEnums - Print out enum values for all of the instructions.
 void InstrInfoEmitter::emitEnums(raw_ostream &OS) {
-  EmitSourceFileHeader("Target Instruction Enum Values", OS);
 
   OS << "\n#ifdef GET_INSTRINFO_ENUM\n";
   OS << "#undef GET_INSTRINFO_ENUM\n";
@@ -389,8 +591,25 @@ void InstrInfoEmitter::emitEnums(raw_ostream &OS) {
        << "\t= " << i << ",\n";
   }
   OS << "    INSTRUCTION_LIST_END = " << NumberedInstructions.size() << "\n";
-  OS << "  };\n}\n";
+  OS << "  };\n";
+  OS << "namespace Sched {\n";
+  OS << "  enum {\n";
+  for (unsigned i = 0, e = SchedModels.numInstrSchedClasses(); i != e; ++i) {
+    OS << "    " << SchedModels.getSchedClass(i).Name
+       << "\t= " << i << ",\n";
+  }
+  OS << "    SCHED_LIST_END = " << SchedModels.numInstrSchedClasses() << "\n";
+  OS << "  };\n}\n}\n";
   OS << "} // End llvm namespace \n";
 
   OS << "#endif // GET_INSTRINFO_ENUM\n\n";
 }
+
+namespace llvm {
+
+void EmitInstrInfo(RecordKeeper &RK, raw_ostream &OS) {
+  InstrInfoEmitter(RK).run(OS);
+  EmitMapTable(RK, OS);
+}
+
+} // End llvm namespace

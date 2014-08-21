@@ -13,30 +13,29 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
-#include "llvm/Constants.h"
-#include "llvm/DerivedTypes.h"
-#include "llvm/Function.h"
-#include "llvm/GlobalVariable.h"
-#include "llvm/Module.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/Triple.h"
 #include "llvm/CodeGen/MachineModuleInfoImpls.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/Module.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
-#include "llvm/MC/MCSectionMachO.h"
-#include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionCOFF.h"
+#include "llvm/MC/MCSectionELF.h"
+#include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
-#include "llvm/Target/Mangler.h"
-#include "llvm/Target/TargetData.h"
-#include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetOptions.h"
 #include "llvm/Support/Dwarf.h"
 #include "llvm/Support/ELF.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/StringExtras.h"
-#include "llvm/ADT/Triple.h"
+#include "llvm/Target/Mangler.h"
+#include "llvm/Target/TargetMachine.h"
 using namespace llvm;
 using namespace dwarf;
 
@@ -53,10 +52,10 @@ TargetLoweringObjectFileELF::getCFIPersonalitySymbol(const GlobalValue *GV,
   default:
     report_fatal_error("We do not support this DWARF encoding yet!");
   case dwarf::DW_EH_PE_absptr:
-    return  Mang->getSymbol(GV);
+    return  getSymbol(*Mang, GV);
   case dwarf::DW_EH_PE_pcrel: {
     return getContext().GetOrCreateSymbol(StringRef("DW.ref.") +
-                                          Mang->getSymbol(GV)->getName());
+                                          getSymbol(*Mang, GV)->getName());
   }
   }
 }
@@ -77,9 +76,9 @@ void TargetLoweringObjectFileELF::emitPersonalityValue(MCStreamer &Streamer,
                                                     Flags,
                                                     SectionKind::getDataRel(),
                                                     0, Label->getName());
-  unsigned Size = TM.getTargetData()->getPointerSize();
+  unsigned Size = TM.getDataLayout()->getPointerSize();
   Streamer.SwitchSection(Sec);
-  Streamer.EmitValueToAlignment(TM.getTargetData()->getPointerABIAlignment());
+  Streamer.EmitValueToAlignment(TM.getDataLayout()->getPointerABIAlignment());
   Streamer.EmitSymbolAttribute(Label, MCSA_ELF_TypeObject);
   const MCExpr *E = MCConstantExpr::Create(Size, getContext());
   Streamer.EmitELFSize(Label, E);
@@ -88,13 +87,44 @@ void TargetLoweringObjectFileELF::emitPersonalityValue(MCStreamer &Streamer,
   Streamer.EmitSymbolValue(Sym, Size);
 }
 
+const MCExpr *TargetLoweringObjectFileELF::
+getTTypeGlobalReference(const GlobalValue *GV, Mangler *Mang,
+                        MachineModuleInfo *MMI, unsigned Encoding,
+                        MCStreamer &Streamer) const {
+
+  if (Encoding & dwarf::DW_EH_PE_indirect) {
+    MachineModuleInfoELF &ELFMMI = MMI->getObjFileInfo<MachineModuleInfoELF>();
+
+    SmallString<128> Name;
+    Mang->getNameWithPrefix(Name, GV, true);
+    Name += ".DW.stub";
+
+    // Add information about the stub reference to ELFMMI so that the stub
+    // gets emitted by the asmprinter.
+    MCSymbol *SSym = getContext().GetOrCreateSymbol(Name.str());
+    MachineModuleInfoImpl::StubValueTy &StubSym = ELFMMI.getGVStubEntry(SSym);
+    if (StubSym.getPointer() == 0) {
+      MCSymbol *Sym = getSymbol(*Mang, GV);
+      StubSym = MachineModuleInfoImpl::StubValueTy(Sym, !GV->hasLocalLinkage());
+    }
+
+    return TargetLoweringObjectFile::
+      getTTypeReference(MCSymbolRefExpr::Create(SSym, getContext()),
+                        Encoding & ~dwarf::DW_EH_PE_indirect, Streamer);
+  }
+
+  return TargetLoweringObjectFile::
+    getTTypeGlobalReference(GV, Mang, MMI, Encoding, Streamer);
+}
+
 static SectionKind
 getELFKindForNamedSection(StringRef Name, SectionKind K) {
   // N.B.: The defaults used in here are no the same ones used in MC.
   // We follow gcc, MC follows gas. For example, given ".section .eh_frame",
   // both gas and MC will produce a section with no flags. Given
-  // section(".eh_frame") gcc will produce
-  // .section	.eh_frame,"a",@progbits
+  // section(".eh_frame") gcc will produce:
+  //
+  //   .section   .eh_frame,"a",@progbits
   if (Name.empty() || Name[0] != '.') return K;
 
   // Some lame default implementation based on some magic section names.
@@ -222,7 +252,7 @@ SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
     Prefix = getSectionPrefixForGlobal(Kind);
 
     SmallString<128> Name(Prefix, Prefix+strlen(Prefix));
-    MCSymbol *Sym = Mang->getSymbol(GV);
+    MCSymbol *Sym = getSymbol(*Mang, GV);
     Name.append(Sym->getName().begin(), Sym->getName().end());
     StringRef Group = "";
     unsigned Flags = getELFSectionFlags(Kind);
@@ -246,7 +276,7 @@ SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
     // FIXME: this is getting the alignment of the character, not the
     // alignment of the global!
     unsigned Align =
-      TM.getTargetData()->getPreferredAlignment(cast<GlobalVariable>(GV));
+      TM.getDataLayout()->getPreferredAlignment(cast<GlobalVariable>(GV));
 
     const char *SizeSpec = ".rodata.str1.";
     if (Kind.isMergeable2ByteCString())
@@ -313,35 +343,6 @@ getSectionForConstant(SectionKind Kind) const {
   return DataRelROSection;
 }
 
-const MCExpr *TargetLoweringObjectFileELF::
-getExprForDwarfGlobalReference(const GlobalValue *GV, Mangler *Mang,
-                               MachineModuleInfo *MMI,
-                               unsigned Encoding, MCStreamer &Streamer) const {
-
-  if (Encoding & dwarf::DW_EH_PE_indirect) {
-    MachineModuleInfoELF &ELFMMI = MMI->getObjFileInfo<MachineModuleInfoELF>();
-
-    SmallString<128> Name;
-    Mang->getNameWithPrefix(Name, GV, true);
-    Name += ".DW.stub";
-
-    // Add information about the stub reference to ELFMMI so that the stub
-    // gets emitted by the asmprinter.
-    MCSymbol *SSym = getContext().GetOrCreateSymbol(Name.str());
-    MachineModuleInfoImpl::StubValueTy &StubSym = ELFMMI.getGVStubEntry(SSym);
-    if (StubSym.getPointer() == 0) {
-      MCSymbol *Sym = Mang->getSymbol(GV);
-      StubSym = MachineModuleInfoImpl::StubValueTy(Sym, !GV->hasLocalLinkage());
-    }
-
-    return TargetLoweringObjectFile::
-      getExprForDwarfReference(SSym, Encoding & ~dwarf::DW_EH_PE_indirect, Streamer);
-  }
-
-  return TargetLoweringObjectFile::
-    getExprForDwarfGlobalReference(GV, Mang, MMI, Encoding, Streamer);
-}
-
 const MCSection *
 TargetLoweringObjectFileELF::getStaticCtorSection(unsigned Priority) const {
   // The default scheme is .ctor / .dtor, so we have to invert the priority
@@ -349,10 +350,17 @@ TargetLoweringObjectFileELF::getStaticCtorSection(unsigned Priority) const {
   if (Priority == 65535)
     return StaticCtorSection;
 
-  std::string Name = std::string(".ctors.") + utostr(65535 - Priority);
-  return getContext().getELFSection(Name, ELF::SHT_PROGBITS,
-                                    ELF::SHF_ALLOC |ELF::SHF_WRITE,
-                                    SectionKind::getDataRel());
+  if (UseInitArray) {
+    std::string Name = std::string(".init_array.") + utostr(Priority);
+    return getContext().getELFSection(Name, ELF::SHT_INIT_ARRAY,
+                                      ELF::SHF_ALLOC | ELF::SHF_WRITE,
+                                      SectionKind::getDataRel());
+  } else {
+    std::string Name = std::string(".ctors.") + utostr(65535 - Priority);
+    return getContext().getELFSection(Name, ELF::SHT_PROGBITS,
+                                      ELF::SHF_ALLOC |ELF::SHF_WRITE,
+                                      SectionKind::getDataRel());
+  }
 }
 
 const MCSection *
@@ -362,24 +370,49 @@ TargetLoweringObjectFileELF::getStaticDtorSection(unsigned Priority) const {
   if (Priority == 65535)
     return StaticDtorSection;
 
-  std::string Name = std::string(".dtors.") + utostr(65535 - Priority);
-  return getContext().getELFSection(Name, ELF::SHT_PROGBITS,
-                                    ELF::SHF_ALLOC |ELF::SHF_WRITE,
-                                    SectionKind::getDataRel());
+  if (UseInitArray) {
+    std::string Name = std::string(".fini_array.") + utostr(Priority);
+    return getContext().getELFSection(Name, ELF::SHT_FINI_ARRAY,
+                                      ELF::SHF_ALLOC | ELF::SHF_WRITE,
+                                      SectionKind::getDataRel());
+  } else {
+    std::string Name = std::string(".dtors.") + utostr(65535 - Priority);
+    return getContext().getELFSection(Name, ELF::SHT_PROGBITS,
+                                      ELF::SHF_ALLOC |ELF::SHF_WRITE,
+                                      SectionKind::getDataRel());
+  }
+}
+
+void
+TargetLoweringObjectFileELF::InitializeELF(bool UseInitArray_) {
+  UseInitArray = UseInitArray_;
+  if (!UseInitArray)
+    return;
+
+  StaticCtorSection =
+    getContext().getELFSection(".init_array", ELF::SHT_INIT_ARRAY,
+                               ELF::SHF_WRITE |
+                               ELF::SHF_ALLOC,
+                               SectionKind::getDataRel());
+  StaticDtorSection =
+    getContext().getELFSection(".fini_array", ELF::SHT_FINI_ARRAY,
+                               ELF::SHF_WRITE |
+                               ELF::SHF_ALLOC,
+                               SectionKind::getDataRel());
 }
 
 //===----------------------------------------------------------------------===//
 //                                 MachO
 //===----------------------------------------------------------------------===//
 
-/// emitModuleFlags - Emit the module flags that specify the garbage collection
-/// information.
+/// emitModuleFlags - Perform code emission for module flags.
 void TargetLoweringObjectFileMachO::
 emitModuleFlags(MCStreamer &Streamer,
                 ArrayRef<Module::ModuleFlagEntry> ModuleFlags,
                 Mangler *Mang, const TargetMachine &TM) const {
   unsigned VersionVal = 0;
-  unsigned GCFlags = 0;
+  unsigned ImageInfoFlags = 0;
+  MDNode *LinkerOptions = 0;
   StringRef SectionVal;
 
   for (ArrayRef<Module::ModuleFlagEntry>::iterator
@@ -393,13 +426,33 @@ emitModuleFlags(MCStreamer &Streamer,
     StringRef Key = MFE.Key->getString();
     Value *Val = MFE.Val;
 
-    if (Key == "Objective-C Image Info Version")
+    if (Key == "Objective-C Image Info Version") {
       VersionVal = cast<ConstantInt>(Val)->getZExtValue();
-    else if (Key == "Objective-C Garbage Collection" ||
-             Key == "Objective-C GC Only")
-      GCFlags |= cast<ConstantInt>(Val)->getZExtValue();
-    else if (Key == "Objective-C Image Info Section")
+    } else if (Key == "Objective-C Garbage Collection" ||
+               Key == "Objective-C GC Only" ||
+               Key == "Objective-C Is Simulated") {
+      ImageInfoFlags |= cast<ConstantInt>(Val)->getZExtValue();
+    } else if (Key == "Objective-C Image Info Section") {
       SectionVal = cast<MDString>(Val)->getString();
+    } else if (Key == "Linker Options") {
+      LinkerOptions = cast<MDNode>(Val);
+    }
+  }
+
+  // Emit the linker options if present.
+  if (LinkerOptions) {
+    for (unsigned i = 0, e = LinkerOptions->getNumOperands(); i != e; ++i) {
+      MDNode *MDOptions = cast<MDNode>(LinkerOptions->getOperand(i));
+      SmallVector<std::string, 4> StrOptions;
+
+      // Convert to strings.
+      for (unsigned ii = 0, ie = MDOptions->getNumOperands(); ii != ie; ++ii) {
+        MDString *MDOption = cast<MDString>(MDOptions->getOperand(ii));
+        StrOptions.push_back(MDOption->getString());
+      }
+
+      Streamer.EmitLinkerOptions(StrOptions);
+    }
   }
 
   // The section is mandatory. If we don't have it, then we don't have GC info.
@@ -424,7 +477,7 @@ emitModuleFlags(MCStreamer &Streamer,
   Streamer.EmitLabel(getContext().
                      GetOrCreateSymbol(StringRef("L_OBJC_IMAGE_INFO")));
   Streamer.EmitIntValue(VersionVal, 4);
-  Streamer.EmitIntValue(GCFlags, 4);
+  Streamer.EmitIntValue(ImageInfoFlags, 4);
   Streamer.AddBlankLine();
 }
 
@@ -488,14 +541,14 @@ SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
 
   // FIXME: Alignment check should be handled by section classifier.
   if (Kind.isMergeable1ByteCString() &&
-      TM.getTargetData()->getPreferredAlignment(cast<GlobalVariable>(GV)) < 32)
+      TM.getDataLayout()->getPreferredAlignment(cast<GlobalVariable>(GV)) < 32)
     return CStringSection;
 
   // Do not put 16-bit arrays in the UString section if they have an
   // externally visible label, this runs into issues with certain linker
   // versions.
   if (Kind.isMergeable2ByteCString() && !GV->hasExternalLinkage() &&
-      TM.getTargetData()->getPreferredAlignment(cast<GlobalVariable>(GV)) < 32)
+      TM.getDataLayout()->getPreferredAlignment(cast<GlobalVariable>(GV)) < 32)
     return UStringSection;
 
   if (Kind.isMergeableConst()) {
@@ -561,7 +614,7 @@ shouldEmitUsedDirectiveFor(const GlobalValue *GV, Mangler *Mang) const {
     // FIXME: ObjC metadata is currently emitted as internal symbols that have
     // \1L and \0l prefixes on them.  Fix them to be Private/LinkerPrivate and
     // this horrible hack can go away.
-    MCSymbol *Sym = Mang->getSymbol(GV);
+    MCSymbol *Sym = getSymbol(*Mang, GV);
     if (Sym->getName()[0] == 'L' || Sym->getName()[0] == 'l')
       return false;
   }
@@ -570,9 +623,9 @@ shouldEmitUsedDirectiveFor(const GlobalValue *GV, Mangler *Mang) const {
 }
 
 const MCExpr *TargetLoweringObjectFileMachO::
-getExprForDwarfGlobalReference(const GlobalValue *GV, Mangler *Mang,
-                               MachineModuleInfo *MMI, unsigned Encoding,
-                               MCStreamer &Streamer) const {
+getTTypeGlobalReference(const GlobalValue *GV, Mangler *Mang,
+                        MachineModuleInfo *MMI, unsigned Encoding,
+                        MCStreamer &Streamer) const {
   // The mach-o version of this method defaults to returning a stub reference.
 
   if (Encoding & DW_EH_PE_indirect) {
@@ -590,16 +643,17 @@ getExprForDwarfGlobalReference(const GlobalValue *GV, Mangler *Mang,
       GV->hasHiddenVisibility() ? MachOMMI.getHiddenGVStubEntry(SSym) :
                                   MachOMMI.getGVStubEntry(SSym);
     if (StubSym.getPointer() == 0) {
-      MCSymbol *Sym = Mang->getSymbol(GV);
+      MCSymbol *Sym = getSymbol(*Mang, GV);
       StubSym = MachineModuleInfoImpl::StubValueTy(Sym, !GV->hasLocalLinkage());
     }
 
     return TargetLoweringObjectFile::
-      getExprForDwarfReference(SSym, Encoding & ~dwarf::DW_EH_PE_indirect, Streamer);
+      getTTypeReference(MCSymbolRefExpr::Create(SSym, getContext()),
+                        Encoding & ~dwarf::DW_EH_PE_indirect, Streamer);
   }
 
   return TargetLoweringObjectFile::
-    getExprForDwarfGlobalReference(GV, Mang, MMI, Encoding, Streamer);
+    getTTypeGlobalReference(GV, Mang, MMI, Encoding, Streamer);
 }
 
 MCSymbol *TargetLoweringObjectFileMachO::
@@ -618,7 +672,7 @@ getCFIPersonalitySymbol(const GlobalValue *GV, Mangler *Mang,
   MCSymbol *SSym = getContext().GetOrCreateSymbol(Name.str());
   MachineModuleInfoImpl::StubValueTy &StubSym = MachOMMI.getGVStubEntry(SSym);
   if (StubSym.getPointer() == 0) {
-    MCSymbol *Sym = Mang->getSymbol(GV);
+    MCSymbol *Sym = getSymbol(*Mang, GV);
     StubSym = MachineModuleInfoImpl::StubValueTy(Sym, !GV->hasLocalLinkage());
   }
 
@@ -667,9 +721,20 @@ getCOFFSectionFlags(SectionKind K) {
 const MCSection *TargetLoweringObjectFileCOFF::
 getExplicitSectionGlobal(const GlobalValue *GV, SectionKind Kind,
                          Mangler *Mang, const TargetMachine &TM) const {
-  return getContext().getCOFFSection(GV->getSection(),
-                                     getCOFFSectionFlags(Kind),
-                                     Kind);
+  int Selection = 0;
+  unsigned Characteristics = getCOFFSectionFlags(Kind);
+  SmallString<128> Name(GV->getSection().c_str());
+  if (GV->isWeakForLinker()) {
+    Selection = COFF::IMAGE_COMDAT_SELECT_ANY;
+    Characteristics |= COFF::IMAGE_SCN_LNK_COMDAT;
+    Name.append("$");
+    Mang->getNameWithPrefix(Name, GV, false, false);
+  }
+  return getContext().getCOFFSection(Name,
+                                     Characteristics,
+                                     Kind,
+                                     "",
+                                     Selection);
 }
 
 static const char *getCOFFSectionPrefixForUniqueGlobal(SectionKind Kind) {
@@ -677,8 +742,11 @@ static const char *getCOFFSectionPrefixForUniqueGlobal(SectionKind Kind) {
     return ".text$";
   if (Kind.isBSS ())
     return ".bss$";
-  if (Kind.isThreadLocal())
-    return ".tls$";
+  if (Kind.isThreadLocal()) {
+    // 'LLVM' is just an arbitary string to ensure that the section name gets
+    // sorted in between '.tls$AAA' and '.tls$ZZZ' by the linker.
+    return ".tls$LLVM";
+  }
   if (Kind.isWriteable())
     return ".data$";
   return ".rdata$";
@@ -694,23 +762,74 @@ SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
   if (GV->isWeakForLinker()) {
     const char *Prefix = getCOFFSectionPrefixForUniqueGlobal(Kind);
     SmallString<128> Name(Prefix, Prefix+strlen(Prefix));
-    MCSymbol *Sym = Mang->getSymbol(GV);
-    Name.append(Sym->getName().begin() + 1, Sym->getName().end());
+    Mang->getNameWithPrefix(Name, GV, false, false);
 
     unsigned Characteristics = getCOFFSectionFlags(Kind);
 
     Characteristics |= COFF::IMAGE_SCN_LNK_COMDAT;
 
     return getContext().getCOFFSection(Name.str(), Characteristics,
-                          COFF::IMAGE_COMDAT_SELECT_ANY, Kind);
+                                       Kind, "", COFF::IMAGE_COMDAT_SELECT_ANY);
   }
 
   if (Kind.isText())
-    return getTextSection();
+    return TextSection;
 
   if (Kind.isThreadLocal())
-    return getTLSDataSection();
+    return TLSDataSection;
 
-  return getDataSection();
+  if (Kind.isReadOnly())
+    return ReadOnlySection;
+
+  if (Kind.isBSS())
+    return BSSSection;
+
+  return DataSection;
 }
 
+void TargetLoweringObjectFileCOFF::
+emitModuleFlags(MCStreamer &Streamer,
+                ArrayRef<Module::ModuleFlagEntry> ModuleFlags,
+                Mangler *Mang, const TargetMachine &TM) const {
+  MDNode *LinkerOptions = 0;
+
+  // Look for the "Linker Options" flag, since it's the only one we support.
+  for (ArrayRef<Module::ModuleFlagEntry>::iterator
+       i = ModuleFlags.begin(), e = ModuleFlags.end(); i != e; ++i) {
+    const Module::ModuleFlagEntry &MFE = *i;
+    StringRef Key = MFE.Key->getString();
+    Value *Val = MFE.Val;
+    if (Key == "Linker Options") {
+      LinkerOptions = cast<MDNode>(Val);
+      break;
+    }
+  }
+  if (!LinkerOptions)
+    return;
+
+  // Emit the linker options to the linker .drectve section.  According to the
+  // spec, this section is a space-separated string containing flags for linker.
+  const MCSection *Sec = getDrectveSection();
+  Streamer.SwitchSection(Sec);
+  for (unsigned i = 0, e = LinkerOptions->getNumOperands(); i != e; ++i) {
+    MDNode *MDOptions = cast<MDNode>(LinkerOptions->getOperand(i));
+    for (unsigned ii = 0, ie = MDOptions->getNumOperands(); ii != ie; ++ii) {
+      MDString *MDOption = cast<MDString>(MDOptions->getOperand(ii));
+      StringRef Op = MDOption->getString();
+      // Lead with a space for consistency with our dllexport implementation.
+      std::string Escaped(" ");
+      if (Op.find(" ") != StringRef::npos) {
+        // The PE-COFF spec says args with spaces must be quoted.  It doesn't say
+        // how to escape quotes, but it probably uses this algorithm:
+        // http://msdn.microsoft.com/en-us/library/17w5ykft(v=vs.85).aspx
+        // FIXME: Reuse escaping code from Support/Windows/Program.inc
+        Escaped.push_back('\"');
+        Escaped.append(Op);
+        Escaped.push_back('\"');
+      } else {
+        Escaped.append(Op);
+      }
+      Streamer.EmitBytes(Escaped);
+    }
+  }
+}

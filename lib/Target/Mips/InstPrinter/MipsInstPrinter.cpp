@@ -13,6 +13,7 @@
 
 #define DEBUG_TYPE "asm-printer"
 #include "MipsInstPrinter.h"
+#include "MipsInstrInfo.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
@@ -22,7 +23,14 @@
 #include "llvm/Support/raw_ostream.h"
 using namespace llvm;
 
+#define PRINT_ALIAS_INSTR
 #include "MipsGenAsmWriter.inc"
+
+template<unsigned R>
+static bool isReg(const MCInst &MI, unsigned OpNo) {
+  assert(MI.getOperand(OpNo).isReg() && "Register operand expected.");
+  return MI.getOperand(OpNo).getReg() == R;
+}
 
 const char* Mips::MipsFCCToString(Mips::CondCode CC) {
   switch (CC) {
@@ -68,8 +76,27 @@ void MipsInstPrinter::printRegName(raw_ostream &OS, unsigned RegNo) const {
 
 void MipsInstPrinter::printInst(const MCInst *MI, raw_ostream &O,
                                 StringRef Annot) {
-  printInstruction(MI, O);
+  switch (MI->getOpcode()) {
+  default:
+    break;
+  case Mips::RDHWR:
+  case Mips::RDHWR64:
+    O << "\t.set\tpush\n";
+    O << "\t.set\tmips32r2\n";
+  }
+
+  // Try to print any aliases first.
+  if (!printAliasInstr(MI, O) && !printAlias(*MI, O))
+    printInstruction(MI, O);
   printAnnotation(O, Annot);
+
+  switch (MI->getOpcode()) {
+  default:
+    break;
+  case Mips::RDHWR:
+  case Mips::RDHWR64:
+    O << "\n\t.set\tpop";
+  }
 }
 
 static void printExpr(const MCExpr *Expr, raw_ostream &OS) {
@@ -108,6 +135,12 @@ static void printExpr(const MCExpr *Expr, raw_ostream &OS) {
   case MCSymbolRefExpr::VK_Mips_GOT_DISP:  OS << "%got_disp("; break;
   case MCSymbolRefExpr::VK_Mips_GOT_PAGE:  OS << "%got_page("; break;
   case MCSymbolRefExpr::VK_Mips_GOT_OFST:  OS << "%got_ofst("; break;
+  case MCSymbolRefExpr::VK_Mips_HIGHER:    OS << "%higher("; break;
+  case MCSymbolRefExpr::VK_Mips_HIGHEST:   OS << "%highest("; break;
+  case MCSymbolRefExpr::VK_Mips_GOT_HI16:  OS << "%got_hi("; break;
+  case MCSymbolRefExpr::VK_Mips_GOT_LO16:  OS << "%got_lo("; break;
+  case MCSymbolRefExpr::VK_Mips_CALL_HI16: OS << "%call_hi("; break;
+  case MCSymbolRefExpr::VK_Mips_CALL_LO16: OS << "%call_lo("; break;
   }
 
   OS << SRE->getSymbol();
@@ -151,6 +184,15 @@ void MipsInstPrinter::printUnsignedImm(const MCInst *MI, int opNum,
     printOperand(MI, opNum, O);
 }
 
+void MipsInstPrinter::printUnsignedImm8(const MCInst *MI, int opNum,
+                                        raw_ostream &O) {
+  const MCOperand &MO = MI->getOperand(opNum);
+  if (MO.isImm())
+    O << (unsigned short int)(unsigned char)MO.getImm();
+  else
+    printOperand(MI, opNum, O);
+}
+
 void MipsInstPrinter::
 printMemOperand(const MCInst *MI, int opNum, raw_ostream &O) {
   // Load/Store memory operands -- imm($reg)
@@ -176,4 +218,71 @@ void MipsInstPrinter::
 printFCCOperand(const MCInst *MI, int opNum, raw_ostream &O) {
   const MCOperand& MO = MI->getOperand(opNum);
   O << MipsFCCToString((Mips::CondCode)MO.getImm());
+}
+
+void MipsInstPrinter::
+printSHFMask(const MCInst *MI, int opNum, raw_ostream &O) {
+  llvm_unreachable("TODO");
+}
+
+bool MipsInstPrinter::printAlias(const char *Str, const MCInst &MI,
+                                 unsigned OpNo, raw_ostream &OS) {
+  OS << "\t" << Str << "\t";
+  printOperand(&MI, OpNo, OS);
+  return true;
+}
+
+bool MipsInstPrinter::printAlias(const char *Str, const MCInst &MI,
+                                 unsigned OpNo0, unsigned OpNo1,
+                                 raw_ostream &OS) {
+  printAlias(Str, MI, OpNo0, OS);
+  OS << ", ";
+  printOperand(&MI, OpNo1, OS);
+  return true;
+}
+
+bool MipsInstPrinter::printAlias(const MCInst &MI, raw_ostream &OS) {
+  switch (MI.getOpcode()) {
+  case Mips::BEQ:
+    // beq $zero, $zero, $L2 => b $L2
+    // beq $r0, $zero, $L2 => beqz $r0, $L2
+    return (isReg<Mips::ZERO>(MI, 0) && isReg<Mips::ZERO>(MI, 1) &&
+            printAlias("b", MI, 2, OS)) ||
+           (isReg<Mips::ZERO>(MI, 1) && printAlias("beqz", MI, 0, 2, OS));
+  case Mips::BEQ64:
+    // beq $r0, $zero, $L2 => beqz $r0, $L2
+    return isReg<Mips::ZERO_64>(MI, 1) && printAlias("beqz", MI, 0, 2, OS);
+  case Mips::BNE:
+    // bne $r0, $zero, $L2 => bnez $r0, $L2
+    return isReg<Mips::ZERO>(MI, 1) && printAlias("bnez", MI, 0, 2, OS);
+  case Mips::BNE64:
+    // bne $r0, $zero, $L2 => bnez $r0, $L2
+    return isReg<Mips::ZERO_64>(MI, 1) && printAlias("bnez", MI, 0, 2, OS);
+  case Mips::BGEZAL:
+    // bgezal $zero, $L1 => bal $L1
+    return isReg<Mips::ZERO>(MI, 0) && printAlias("bal", MI, 1, OS);
+  case Mips::BC1T:
+    // bc1t $fcc0, $L1 => bc1t $L1
+    return isReg<Mips::FCC0>(MI, 0) && printAlias("bc1t", MI, 1, OS);
+  case Mips::BC1F:
+    // bc1f $fcc0, $L1 => bc1f $L1
+    return isReg<Mips::FCC0>(MI, 0) && printAlias("bc1f", MI, 1, OS);
+  case Mips::JALR:
+    // jalr $ra, $r1 => jalr $r1
+    return isReg<Mips::RA>(MI, 0) && printAlias("jalr", MI, 1, OS);
+  case Mips::JALR64:
+    // jalr $ra, $r1 => jalr $r1
+    return isReg<Mips::RA_64>(MI, 0) && printAlias("jalr", MI, 1, OS);
+  case Mips::NOR:
+  case Mips::NOR_MM:
+    // nor $r0, $r1, $zero => not $r0, $r1
+    return isReg<Mips::ZERO>(MI, 2) && printAlias("not", MI, 0, 1, OS);
+  case Mips::NOR64:
+    // nor $r0, $r1, $zero => not $r0, $r1
+    return isReg<Mips::ZERO_64>(MI, 2) && printAlias("not", MI, 0, 1, OS);
+  case Mips::OR:
+    // or $r0, $r1, $zero => move $r0, $r1
+    return isReg<Mips::ZERO>(MI, 2) && printAlias("move", MI, 0, 1, OS);
+  default: return false;
+  }
 }

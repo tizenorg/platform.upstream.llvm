@@ -13,24 +13,28 @@
 //
 //===----------------------------------------------------------------------===//
 
-
 #define DEBUG_TYPE "asm-printer"
 #include "Hexagon.h"
 #include "HexagonAsmPrinter.h"
 #include "HexagonMachineFunctionInfo.h"
 #include "HexagonTargetMachine.h"
 #include "HexagonSubtarget.h"
+#include "MCTargetDesc/HexagonMCInst.h"
 #include "InstPrinter/HexagonInstPrinter.h"
-#include "llvm/Constants.h"
-#include "llvm/DerivedTypes.h"
-#include "llvm/Module.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Assembly/Writer.h"
 #include "llvm/CodeGen/AsmPrinter.h"
-#include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/MachineModuleInfo.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Module.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
@@ -38,22 +42,18 @@
 #include "llvm/MC/MCSection.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
-#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/Debug.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/Format.h"
-#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/TargetRegistry.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/Mangler.h"
-#include "llvm/Target/TargetData.h"
-#include "llvm/Target/TargetLoweringObjectFile.h"
-#include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/Target/TargetInstrInfo.h"
+#include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetOptions.h"
-#include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringExtras.h"
+#include "llvm/Target/TargetRegisterInfo.h"
 
 using namespace llvm;
 
@@ -77,8 +77,7 @@ void HexagonAsmPrinter::printOperand(const MachineInstr *MI, unsigned OpNo,
   const MachineOperand &MO = MI->getOperand(OpNo);
 
   switch (MO.getType()) {
-  default:
-    assert(0 && "<unknown operand type>");
+  default: llvm_unreachable ("<unknown operand type>");
   case MachineOperand::MO_Register:
     O << HexagonInstPrinter::getRegisterName(MO.getReg());
     return;
@@ -100,7 +99,7 @@ void HexagonAsmPrinter::printOperand(const MachineInstr *MI, unsigned OpNo,
     return;
   case MachineOperand::MO_GlobalAddress:
     // Computing the address of a global symbol, not calling it.
-    O << *Mang->getSymbol(MO.getGlobal());
+    O << *getSymbol(MO.getGlobal());
     printOffset(MO.getOffset(), O);
     return;
   }
@@ -134,7 +133,9 @@ bool HexagonAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
     if (ExtraCode[1] != 0) return true; // Unknown modifier.
 
     switch (ExtraCode[0]) {
-    default: return true;  // Unknown modifier.
+    default:
+      // See if this is a generic print operand
+      return AsmPrinter::PrintAsmOperand(MI, OpNo, AsmVariant, ExtraCode, OS);
     case 'c': // Don't print "$" before a global var name or constant.
       // Hexagon never has a prefix.
       printOperand(MI, OpNo, OS);
@@ -196,10 +197,45 @@ void HexagonAsmPrinter::printPredicateOperand(const MachineInstr *MI,
 /// the current output stream.
 ///
 void HexagonAsmPrinter::EmitInstruction(const MachineInstr *MI) {
-  MCInst MCI;
+  if (MI->isBundle()) {
+    std::vector<const MachineInstr*> BundleMIs;
 
-  HexagonLowerToMC(MI, MCI, *this);
-  OutStreamer.EmitInstruction(MCI);
+    const MachineBasicBlock *MBB = MI->getParent();
+    MachineBasicBlock::const_instr_iterator MII = MI;
+    ++MII;
+    unsigned int IgnoreCount = 0;
+    while (MII != MBB->end() && MII->isInsideBundle()) {
+      const MachineInstr *MInst = MII;
+      if (MInst->getOpcode() == TargetOpcode::DBG_VALUE ||
+          MInst->getOpcode() == TargetOpcode::IMPLICIT_DEF) {
+          IgnoreCount++;
+          ++MII;
+          continue;
+      }
+      //BundleMIs.push_back(&*MII);
+      BundleMIs.push_back(MInst);
+      ++MII;
+    }
+    unsigned Size = BundleMIs.size();
+    assert((Size+IgnoreCount) == MI->getBundleSize() && "Corrupt Bundle!");
+    for (unsigned Index = 0; Index < Size; Index++) {
+      HexagonMCInst MCI;
+      MCI.setPacketStart(Index == 0);
+      MCI.setPacketEnd(Index == (Size-1));
+
+      HexagonLowerToMC(BundleMIs[Index], MCI, *this);
+      OutStreamer.EmitInstruction(MCI);
+    }
+  }
+  else {
+    HexagonMCInst MCI;
+    if (MI->getOpcode() == Hexagon::ENDLOOP0) {
+      MCI.setPacketStart(true);
+      MCI.setPacketEnd(true);
+    }
+    HexagonLowerToMC(MI, MCI, *this);
+    OutStreamer.EmitInstruction(MCI);
+  }
 
   return;
 }
@@ -231,7 +267,7 @@ void HexagonAsmPrinter::printGlobalOperand(const MachineInstr *MI, int OpNo,
   assert( (MO.getType() == MachineOperand::MO_GlobalAddress) &&
          "Expecting global address");
 
-  O << *Mang->getSymbol(MO.getGlobal());
+  O << *getSymbol(MO.getGlobal());
   if (MO.getOffset() != 0) {
     O << " + ";
     O << MO.getOffset();
@@ -241,15 +277,15 @@ void HexagonAsmPrinter::printGlobalOperand(const MachineInstr *MI, int OpNo,
 void HexagonAsmPrinter::printJumpTable(const MachineInstr *MI, int OpNo,
                                        raw_ostream &O) {
   const MachineOperand &MO = MI->getOperand(OpNo);
-  assert( (MO.getType() == MachineOperand::MO_JumpTableIndex) &&
-	  "Expecting jump table index");
+  assert( (MO.getType() == MachineOperand::MO_JumpTableIndex) && 
+           "Expecting jump table index");
 
   // Hexagon_TODO: Do we need name mangling?
   O << *GetJTISymbol(MO.getIndex());
 }
 
 void HexagonAsmPrinter::printConstantPool(const MachineInstr *MI, int OpNo,
-                                          raw_ostream &O) {
+                                       raw_ostream &O) {
   const MachineOperand &MO = MI->getOperand(OpNo);
   assert( (MO.getType() == MachineOperand::MO_ConstantPoolIndex) &&
           "Expecting constant pool index");

@@ -9,8 +9,8 @@
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/APInt.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/edit_distance.h"
 #include <bitset>
 
@@ -37,18 +37,37 @@ static bool ascii_isdigit(char x) {
   return x >= '0' && x <= '9';
 }
 
-/// compare_lower - Compare strings, ignoring case.
-int StringRef::compare_lower(StringRef RHS) const {
-  for (size_t I = 0, E = min(Length, RHS.Length); I != E; ++I) {
-    unsigned char LHC = ascii_tolower(Data[I]);
-    unsigned char RHC = ascii_tolower(RHS.Data[I]);
+// strncasecmp() is not available on non-POSIX systems, so define an
+// alternative function here.
+static int ascii_strncasecmp(const char *LHS, const char *RHS, size_t Length) {
+  for (size_t I = 0; I < Length; ++I) {
+    unsigned char LHC = ascii_tolower(LHS[I]);
+    unsigned char RHC = ascii_tolower(RHS[I]);
     if (LHC != RHC)
       return LHC < RHC ? -1 : 1;
   }
+  return 0;
+}
 
+/// compare_lower - Compare strings, ignoring case.
+int StringRef::compare_lower(StringRef RHS) const {
+  if (int Res = ascii_strncasecmp(Data, RHS.Data, min(Length, RHS.Length)))
+    return Res;
   if (Length == RHS.Length)
     return 0;
   return Length < RHS.Length ? -1 : 1;
+}
+
+/// Check if this string starts with the given \p Prefix, ignoring case.
+bool StringRef::startswith_lower(StringRef Prefix) const {
+  return Length >= Prefix.Length &&
+      ascii_strncasecmp(Data, Prefix.Data, Prefix.Length) == 0;
+}
+
+/// Check if this string ends with the given \p Suffix, ignoring case.
+bool StringRef::endswith_lower(StringRef Suffix) const {
+  return Length >= Suffix.Length &&
+      ascii_strncasecmp(end() - Suffix.Length, Suffix.Data, Suffix.Length) == 0;
 }
 
 /// compare_numeric - Compare strings, handle embedded numbers.
@@ -85,7 +104,7 @@ int StringRef::compare_numeric(StringRef RHS) const {
 // Compute the edit distance between the two given strings.
 unsigned StringRef::edit_distance(llvm::StringRef Other,
                                   bool AllowReplacements,
-                                  unsigned MaxEditDistance) {
+                                  unsigned MaxEditDistance) const {
   return llvm::ComputeEditDistance(
       llvm::ArrayRef<char>(data(), size()),
       llvm::ArrayRef<char>(Other.data(), Other.size()),
@@ -230,6 +249,31 @@ StringRef::size_type StringRef::find_last_of(StringRef Chars,
   return npos;
 }
 
+/// find_last_not_of - Find the last character in the string that is not
+/// \arg C, or npos if not found.
+StringRef::size_type StringRef::find_last_not_of(char C, size_t From) const {
+  for (size_type i = min(From, Length) - 1, e = -1; i != e; --i)
+    if (Data[i] != C)
+      return i;
+  return npos;
+}
+
+/// find_last_not_of - Find the last character in the string that is not in
+/// \arg Chars, or npos if not found.
+///
+/// Note: O(size() + Chars.size())
+StringRef::size_type StringRef::find_last_not_of(StringRef Chars,
+                                                 size_t From) const {
+  std::bitset<1 << CHAR_BIT> CharBits;
+  for (size_type i = 0, e = Chars.size(); i != e; ++i)
+    CharBits.set((unsigned char)Chars[i]);
+
+  for (size_type i = min(From, Length) - 1, e = -1; i != e; --i)
+    if (!CharBits.test((unsigned char)Data[i]))
+      return i;
+  return npos;
+}
+
 void StringRef::split(SmallVectorImpl<StringRef> &A,
                       StringRef Separators, int MaxSplit,
                       bool KeepEmpty) const {
@@ -272,14 +316,22 @@ static unsigned GetAutoSenseRadix(StringRef &Str) {
   if (Str.startswith("0x")) {
     Str = Str.substr(2);
     return 16;
-  } else if (Str.startswith("0b")) {
+  }
+  
+  if (Str.startswith("0b")) {
     Str = Str.substr(2);
     return 2;
-  } else if (Str.startswith("0")) {
-    return 8;
-  } else {
-    return 10;
   }
+
+  if (Str.startswith("0o")) {
+    Str = Str.substr(2);
+    return 8;
+  }
+
+  if (Str.startswith("0"))
+    return 8;
+  
+  return 10;
 }
 
 
@@ -316,8 +368,8 @@ bool llvm::getAsUnsignedInteger(StringRef Str, unsigned Radix,
     unsigned long long PrevResult = Result;
     Result = Result*Radix+CharVal;
 
-    // Check for overflow.
-    if (Result < PrevResult)
+    // Check for overflow by shifting back and seeing if bits were lost.
+    if (Result/Radix < PrevResult)
       return true;
 
     Str = Str.substr(1);
@@ -383,7 +435,7 @@ bool StringRef::getAsInteger(unsigned Radix, APInt &Result) const {
   unsigned BitWidth = Log2Radix * Str.size();
   if (BitWidth < Result.getBitWidth())
     BitWidth = Result.getBitWidth(); // don't shrink the result
-  else
+  else if (BitWidth > Result.getBitWidth())
     Result = Result.zext(BitWidth);
 
   APInt RadixAP, CharAP; // unused unless !IsPowerOf2Radix

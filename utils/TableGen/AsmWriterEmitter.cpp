@@ -12,18 +12,52 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "AsmWriterEmitter.h"
 #include "AsmWriterInst.h"
 #include "CodeGenTarget.h"
-#include "StringToOffsetTable.h"
 #include "SequenceToOffsetTable.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/TableGen/Error.h"
 #include "llvm/TableGen/Record.h"
+#include "llvm/TableGen/TableGenBackend.h"
 #include <algorithm>
+#include <cassert>
+#include <map>
+#include <vector>
 using namespace llvm;
+
+namespace {
+class AsmWriterEmitter {
+  RecordKeeper &Records;
+  CodeGenTarget Target;
+  std::map<const CodeGenInstruction*, AsmWriterInst*> CGIAWIMap;
+  std::vector<const CodeGenInstruction*> NumberedInstructions;
+  std::vector<AsmWriterInst> Instructions;
+public:
+  AsmWriterEmitter(RecordKeeper &R);
+
+  void run(raw_ostream &o);
+
+private:
+  void EmitPrintInstruction(raw_ostream &o);
+  void EmitGetRegisterName(raw_ostream &o);
+  void EmitPrintAliasInstruction(raw_ostream &O);
+
+  AsmWriterInst *getAsmWriterInstByID(unsigned ID) const {
+    assert(ID < NumberedInstructions.size());
+    std::map<const CodeGenInstruction*, AsmWriterInst*>::const_iterator I =
+      CGIAWIMap.find(NumberedInstructions[ID]);
+    assert(I != CGIAWIMap.end() && "Didn't find inst!");
+    return I->second;
+  }
+  void FindUniqueOperandCommands(std::vector<std::string> &UOC,
+                                 std::vector<unsigned> &InstIdxs,
+                                 std::vector<unsigned> &InstOpsUsed) const;
+};
+} // end anonymous namespace
 
 static void PrintCases(std::vector<std::pair<std::string,
                        AsmWriterOperand> > &OpsToPrint, raw_ostream &O) {
@@ -241,9 +275,9 @@ static void UnescapeString(std::string &Str) {
 }
 
 /// EmitPrintInstruction - Generate the code for the "printInstruction" method
-/// implementation.
+/// implementation. Destroys all instances of AsmWriterInst information, by
+/// clearing the Instructions vector.
 void AsmWriterEmitter::EmitPrintInstruction(raw_ostream &O) {
-  CodeGenTarget Target(Records);
   Record *AsmWriter = Target.getAsmWriter();
   std::string ClassName = AsmWriter->getValueAsString("AsmWriterClassName");
   bool isMC = AsmWriter->getValueAsBit("isMCAsmWriter");
@@ -256,33 +290,14 @@ void AsmWriterEmitter::EmitPrintInstruction(raw_ostream &O) {
             << "::printInstruction(const " << MachineInstrClassName
             << " *MI, raw_ostream &O) {\n";
 
-  std::vector<AsmWriterInst> Instructions;
-
-  for (CodeGenTarget::inst_iterator I = Target.inst_begin(),
-         E = Target.inst_end(); I != E; ++I)
-    if (!(*I)->AsmString.empty() &&
-        (*I)->TheDef->getName() != "PHI")
-      Instructions.push_back(
-        AsmWriterInst(**I,
-                      AsmWriter->getValueAsInt("Variant"),
-                      AsmWriter->getValueAsInt("FirstOperandColumn"),
-                      AsmWriter->getValueAsInt("OperandSpacing")));
-
-  // Get the instruction numbering.
-  NumberedInstructions = Target.getInstructionsByEnumValue();
-
-  // Compute the CodeGenInstruction -> AsmWriterInst mapping.  Note that not
-  // all machine instructions are necessarily being printed, so there may be
-  // target instructions not in this map.
-  for (unsigned i = 0, e = Instructions.size(); i != e; ++i)
-    CGIAWIMap.insert(std::make_pair(Instructions[i].CGI, &Instructions[i]));
-
   // Build an aggregate string, and build a table of offsets into it.
   SequenceToOffsetTable<std::string> StringTable;
 
   /// OpcodeInfo - This encodes the index of the string to use for the first
   /// chunk of the output as well as indices used for operand printing.
-  std::vector<unsigned> OpcodeInfo;
+  /// To reduce the number of unhandled cases, we expand the size from 32-bit
+  /// to 32+16 = 48-bit.
+  std::vector<uint64_t> OpcodeInfo;
 
   // Add all strings to the string table upfront so it can generate an optimized
   // representation.
@@ -331,7 +346,7 @@ void AsmWriterEmitter::EmitPrintInstruction(raw_ostream &O) {
 
   // To reduce code size, we compactify common instructions into a few bits
   // in the opcode-indexed table.
-  unsigned BitsLeft = 32-AsmStrBits;
+  unsigned BitsLeft = 64-AsmStrBits;
 
   std::vector<std::vector<std::string> > TableDrivenOperandPrinters;
 
@@ -357,10 +372,11 @@ void AsmWriterEmitter::EmitPrintInstruction(raw_ostream &O) {
     }
 
     // Otherwise, we can include this in the initial lookup table.  Add it in.
-    BitsLeft -= NumBits;
     for (unsigned i = 0, e = InstIdxs.size(); i != e; ++i)
-      if (InstIdxs[i] != ~0U)
-        OpcodeInfo[i] |= InstIdxs[i] << (BitsLeft+AsmStrBits);
+      if (InstIdxs[i] != ~0U) {
+        OpcodeInfo[i] |= (uint64_t)InstIdxs[i] << (64-BitsLeft);
+      }
+    BitsLeft -= NumBits;
 
     // Remove the info about this operand.
     for (unsigned i = 0, e = NumberedInstructions.size(); i != e; ++i) {
@@ -379,15 +395,31 @@ void AsmWriterEmitter::EmitPrintInstruction(raw_ostream &O) {
   }
 
 
-
-  O<<"  static const unsigned OpInfo[] = {\n";
+  // We always emit at least one 32-bit table. A second table is emitted if
+  // more bits are needed.
+  O<<"  static const uint32_t OpInfo[] = {\n";
   for (unsigned i = 0, e = NumberedInstructions.size(); i != e; ++i) {
-    O << "    " << OpcodeInfo[i] << "U,\t// "
+    O << "    " << (OpcodeInfo[i] & 0xffffffff) << "U,\t// "
       << NumberedInstructions[i]->TheDef->getName() << "\n";
   }
   // Add a dummy entry so the array init doesn't end with a comma.
   O << "    0U\n";
   O << "  };\n\n";
+
+  if (BitsLeft < 32) {
+    // Add a second OpInfo table only when it is necessary.
+    // Adjust the type of the second table based on the number of bits needed.
+    O << "  static const uint"
+      << ((BitsLeft < 16) ? "32" : (BitsLeft < 24) ? "16" : "8")
+      << "_t OpInfo2[] = {\n";
+    for (unsigned i = 0, e = NumberedInstructions.size(); i != e; ++i) {
+      O << "    " << (OpcodeInfo[i] >> 32) << "U,\t// "
+        << NumberedInstructions[i]->TheDef->getName() << "\n";
+    }
+    // Add a dummy entry so the array init doesn't end with a comma.
+    O << "    0U\n";
+    O << "  };\n\n";
+  }
 
   // Emit the string itself.
   O << "  const char AsmStrs[] = {\n";
@@ -396,13 +428,22 @@ void AsmWriterEmitter::EmitPrintInstruction(raw_ostream &O) {
 
   O << "  O << \"\\t\";\n\n";
 
-  O << "  // Emit the opcode for the instruction.\n"
-    << "  unsigned Bits = OpInfo[MI->getOpcode()];\n"
-    << "  assert(Bits != 0 && \"Cannot print this instruction.\");\n"
+  O << "  // Emit the opcode for the instruction.\n";
+  if (BitsLeft < 32) {
+    // If we have two tables then we need to perform two lookups and combine
+    // the results into a single 64-bit value.
+    O << "  uint64_t Bits1 = OpInfo[MI->getOpcode()];\n"
+      << "  uint64_t Bits2 = OpInfo2[MI->getOpcode()];\n"
+      << "  uint64_t Bits = (Bits2 << 32) | Bits1;\n";
+  } else {
+    // If only one table is used we just need to perform a single lookup.
+    O << "  uint32_t Bits = OpInfo[MI->getOpcode()];\n";
+  }
+  O << "  assert(Bits != 0 && \"Cannot print this instruction.\");\n"
     << "  O << AsmStrs+(Bits & " << (1 << AsmStrBits)-1 << ")-1;\n\n";
 
   // Output the table driven operand information.
-  BitsLeft = 32-AsmStrBits;
+  BitsLeft = 64-AsmStrBits;
   for (unsigned i = 0, e = TableDrivenOperandPrinters.size(); i != e; ++i) {
     std::vector<std::string> &Commands = TableDrivenOperandPrinters[i];
 
@@ -412,14 +453,13 @@ void AsmWriterEmitter::EmitPrintInstruction(raw_ostream &O) {
     assert(NumBits <= BitsLeft && "consistency error");
 
     // Emit code to extract this field from Bits.
-    BitsLeft -= NumBits;
-
     O << "\n  // Fragment " << i << " encoded into " << NumBits
       << " bits for " << Commands.size() << " unique commands.\n";
 
     if (Commands.size() == 2) {
       // Emit two possibilitys with if/else.
-      O << "  if ((Bits >> " << (BitsLeft+AsmStrBits) << ") & "
+      O << "  if ((Bits >> "
+        << (64-BitsLeft) << ") & "
         << ((1 << NumBits)-1) << ") {\n"
         << Commands[1]
         << "  } else {\n"
@@ -429,7 +469,8 @@ void AsmWriterEmitter::EmitPrintInstruction(raw_ostream &O) {
       // Emit a single possibility.
       O << Commands[0] << "\n\n";
     } else {
-      O << "  switch ((Bits >> " << (BitsLeft+AsmStrBits) << ") & "
+      O << "  switch ((Bits >> "
+        << (64-BitsLeft) << ") & "
         << ((1 << NumBits)-1) << ") {\n"
         << "  default:   // unreachable.\n";
 
@@ -441,6 +482,7 @@ void AsmWriterEmitter::EmitPrintInstruction(raw_ostream &O) {
       }
       O << "  }\n\n";
     }
+    BitsLeft -= NumBits;
   }
 
   // Okay, delete instructions with no operand info left.
@@ -506,9 +548,9 @@ emitRegisterNameString(raw_ostream &O, StringRef AltName,
         std::vector<std::string> AltNames =
           Reg.TheDef->getValueAsListOfStrings("AltNames");
         if (AltNames.size() <= Idx)
-          throw TGError(Reg.TheDef->getLoc(),
-                        (Twine("Register definition missing alt name for '") +
-                        AltName + "'.").str());
+          PrintFatalError(Reg.TheDef->getLoc(),
+            (Twine("Register definition missing alt name for '") +
+             AltName + "'.").str());
         AsmName = AltNames[Idx];
       }
     }
@@ -520,7 +562,7 @@ emitRegisterNameString(raw_ostream &O, StringRef AltName,
   StringTable.emit(O, printChar);
   O << "  };\n\n";
 
-  O << "  static const unsigned RegAsmOffset" << AltName << "[] = {";
+  O << "  static const uint32_t RegAsmOffset" << AltName << "[] = {";
   for (unsigned i = 0, e = Registers.size(); i != e; ++i) {
     if ((i % 14) == 0)
       O << "\n    ";
@@ -531,7 +573,6 @@ emitRegisterNameString(raw_ostream &O, StringRef AltName,
 }
 
 void AsmWriterEmitter::EmitGetRegisterName(raw_ostream &O) {
-  CodeGenTarget Target(Records);
   Record *AsmWriter = Target.getAsmWriter();
   std::string ClassName = AsmWriter->getValueAsString("AsmWriterClassName");
   const std::vector<CodeGenRegister*> &Registers =
@@ -559,7 +600,7 @@ void AsmWriterEmitter::EmitGetRegisterName(raw_ostream &O) {
     emitRegisterNameString(O, "", Registers);
 
   if (hasAltNames) {
-    O << "  const unsigned *RegAsmOffset;\n"
+    O << "  const uint32_t *RegAsmOffset;\n"
       << "  const char *AsmStrs;\n"
       << "  switch(AltIdx) {\n"
       << "  default: llvm_unreachable(\"Invalid register alt name index!\");\n";
@@ -597,7 +638,10 @@ public:
 
   void addCond(const std::string &C) { Conds.push_back(C); }
 
-  void addOperand(StringRef Op, unsigned Idx) { OpMap[Op] = Idx; }
+  void addOperand(StringRef Op, unsigned Idx) {
+    assert(Idx < 0xFF && "Index too large!");
+    OpMap[Op] = Idx;
+  }
   unsigned getOpIndex(StringRef Op) { return OpMap[Op]; }
   bool isOpMapped(StringRef Op) { return OpMap.find(Op) != OpMap.end(); }
 
@@ -621,12 +665,35 @@ public:
 
     O << ") {\n";
     O.indent(6) << "// " << Result << "\n";
-    O.indent(6) << "AsmString = \"" << AsmString << "\";\n";
 
-    for (std::map<StringRef, unsigned>::iterator
-           I = OpMap.begin(), E = OpMap.end(); I != E; ++I)
-      O.indent(6) << "OpMap.push_back(std::make_pair(\"" << I->first << "\", "
-                  << I->second << "));\n";
+    // Directly mangle mapped operands into the string. Each operand is
+    // identified by a '$' sign followed by a byte identifying the number of the
+    // operand. We add one to the index to avoid zero bytes.
+    std::pair<StringRef, StringRef> ASM = StringRef(AsmString).split(' ');
+    SmallString<128> OutString = ASM.first;
+    if (!ASM.second.empty()) {
+      raw_svector_ostream OS(OutString);
+      OS << ' ';
+      for (StringRef::iterator I = ASM.second.begin(), E = ASM.second.end();
+           I != E;) {
+        OS << *I;
+        if (*I == '$') {
+          StringRef::iterator Start = ++I;
+          while (I != E &&
+                 ((*I >= 'a' && *I <= 'z') || (*I >= 'A' && *I <= 'Z') ||
+                  (*I >= '0' && *I <= '9') || *I == '_'))
+            ++I;
+          StringRef Name(Start, I - Start);
+          assert(isOpMapped(Name) && "Unmapped operand!");
+          OS << format("\\x%02X", (unsigned char)getOpIndex(Name) + 1);
+        } else {
+          ++I;
+        }
+      }
+    }
+
+    // Emit the string.
+    O.indent(6) << "AsmString = \"" << OutString.str() << "\";\n";
 
     O.indent(6) << "break;\n";
     O.indent(4) << '}';
@@ -660,19 +727,6 @@ public:
 };
 
 } // end anonymous namespace
-
-static void EmitGetMapOperandNumber(raw_ostream &O) {
-  O << "static unsigned getMapOperandNumber("
-    << "const SmallVectorImpl<std::pair<StringRef, unsigned> > &OpMap,\n";
-  O << "                                    StringRef Name) {\n";
-  O << "  for (SmallVectorImpl<std::pair<StringRef, unsigned> >::"
-    << "const_iterator\n";
-  O << "         I = OpMap.begin(), E = OpMap.end(); I != E; ++I)\n";
-  O << "    if (I->first == Name)\n";
-  O << "      return I->second;\n";
-  O << "  llvm_unreachable(\"Operand not in map!\");\n";
-  O << "}\n\n";
-}
 
 static unsigned CountNumOperands(StringRef AsmString) {
   unsigned NumOps = 0;
@@ -708,7 +762,6 @@ static unsigned CountResultNumOperands(StringRef AsmString) {
 }
 
 void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
-  CodeGenTarget Target(Records);
   Record *AsmWriter = Target.getAsmWriter();
 
   if (!AsmWriter->getValueAsBit("isMCAsmWriter"))
@@ -732,7 +785,7 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
     if (!R->getValueAsBit("EmitAlias"))
       continue; // We were told not to emit the alias, but to emit the aliasee.
     const DagInit *DI = R->getValueAsDag("ResultInst");
-    const DefInit *Op = dynamic_cast<const DefInit*>(DI->getOperator());
+    const DefInit *Op = cast<DefInit>(DI->getOperator());
     AliasMap[getQualifiedName(Op->getDef())].push_back(Alias);
   }
 
@@ -762,7 +815,6 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
       Cond = std::string("MI->getNumOperands() == ") + llvm::utostr(LastOpNo);
       IAP->addCond(Cond);
 
-      std::map<StringRef, unsigned> OpMap;
       bool CantHandle = false;
 
       for (unsigned i = 0, e = LastOpNo; i != e; ++i) {
@@ -782,8 +834,11 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
 
             if (!IAP->isOpMapped(ROName)) {
               IAP->addOperand(ROName, i);
+              Record *R = CGA->ResultOperands[i].getRecord();
+              if (R->isSubClassOf("RegisterOperand"))
+                R = R->getValueAsDef("RegClass");
               Cond = std::string("MRI.getRegClass(") + Target.getName() + "::" +
-                CGA->ResultOperands[i].getRecord()->getName() + "RegClassID)"
+                R->getName() + "RegClassID)"
                 ".contains(MI->getOperand(" + llvm::utostr(i) + ").getReg())";
               IAP->addCond(Cond);
             } else {
@@ -803,12 +858,18 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
 
           break;
         }
-        case CodeGenInstAlias::ResultOperand::K_Imm:
-          Cond = std::string("MI->getOperand(") +
-            llvm::utostr(i) + ").getImm() == " +
-            llvm::utostr(CGA->ResultOperands[i].getImm());
+        case CodeGenInstAlias::ResultOperand::K_Imm: {
+          std::string Op = "MI->getOperand(" + llvm::utostr(i) + ")";
+
+          // Just because the alias has an immediate result, doesn't mean the
+          // MCInst will. An MCExpr could be present, for example.
+          IAP->addCond(Op + ".isImm()");
+
+          Cond = Op + ".getImm() == "
+            + llvm::utostr(CGA->ResultOperands[i].getImm());
           IAP->addCond(Cond);
           break;
+        }
         case CodeGenInstAlias::ResultOperand::K_Reg:
           // If this is zero_reg, something's playing tricks we're not
           // equipped to handle.
@@ -886,11 +947,8 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
     return;
   }
 
-  EmitGetMapOperandNumber(O);
-
   O << HeaderO.str();
-  O.indent(2) << "StringRef AsmString;\n";
-  O.indent(2) << "SmallVector<std::pair<StringRef, unsigned>, 4> OpMap;\n";
+  O.indent(2) << "const char *AsmString;\n";
   O.indent(2) << "switch (MI->getOpcode()) {\n";
   O.indent(2) << "default: return false;\n";
   O << CasesO.str();
@@ -898,27 +956,21 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
 
   // Code that prints the alias, replacing the operands with the ones from the
   // MCInst.
-  O << "  std::pair<StringRef, StringRef> ASM = AsmString.split(' ');\n";
-  O << "  OS << '\\t' << ASM.first;\n";
+  O << "  unsigned I = 0;\n";
+  O << "  while (AsmString[I] != ' ' && AsmString[I] != '\\0')\n";
+  O << "    ++I;\n";
+  O << "  OS << '\\t' << StringRef(AsmString, I);\n";
 
-  O << "  if (!ASM.second.empty()) {\n";
+  O << "  if (AsmString[I] != '\\0') {\n";
   O << "    OS << '\\t';\n";
-  O << "    for (StringRef::iterator\n";
-  O << "         I = ASM.second.begin(), E = ASM.second.end(); I != E; ) {\n";
-  O << "      if (*I == '$') {\n";
-  O << "        StringRef::iterator Start = ++I;\n";
-  O << "        while (I != E &&\n";
-  O << "               ((*I >= 'a' && *I <= 'z') ||\n";
-  O << "                (*I >= 'A' && *I <= 'Z') ||\n";
-  O << "                (*I >= '0' && *I <= '9') ||\n";
-  O << "                *I == '_'))\n";
-  O << "          ++I;\n";
-  O << "        StringRef Name(Start, I - Start);\n";
-  O << "        printOperand(MI, getMapOperandNumber(OpMap, Name), OS);\n";
+  O << "    do {\n";
+  O << "      if (AsmString[I] == '$') {\n";
+  O << "        ++I;\n";
+  O << "        printOperand(MI, unsigned(AsmString[I++]) - 1, OS);\n";
   O << "      } else {\n";
-  O << "        OS << *I++;\n";
+  O << "        OS << AsmString[I++];\n";
   O << "      }\n";
-  O << "    }\n";
+  O << "    } while (AsmString[I] != '\\0');\n";
   O << "  }\n\n";
 
   O << "  return true;\n";
@@ -927,11 +979,39 @@ void AsmWriterEmitter::EmitPrintAliasInstruction(raw_ostream &O) {
   O << "#endif // PRINT_ALIAS_INSTR\n";
 }
 
-void AsmWriterEmitter::run(raw_ostream &O) {
-  EmitSourceFileHeader("Assembly Writer Source Fragment", O);
+AsmWriterEmitter::AsmWriterEmitter(RecordKeeper &R) : Records(R), Target(R) {
+  Record *AsmWriter = Target.getAsmWriter();
+  for (CodeGenTarget::inst_iterator I = Target.inst_begin(),
+                                    E = Target.inst_end();
+       I != E; ++I)
+    if (!(*I)->AsmString.empty() && (*I)->TheDef->getName() != "PHI")
+      Instructions.push_back(
+          AsmWriterInst(**I, AsmWriter->getValueAsInt("Variant"),
+                        AsmWriter->getValueAsInt("FirstOperandColumn"),
+                        AsmWriter->getValueAsInt("OperandSpacing")));
 
+  // Get the instruction numbering.
+  NumberedInstructions = Target.getInstructionsByEnumValue();
+
+  // Compute the CodeGenInstruction -> AsmWriterInst mapping.  Note that not
+  // all machine instructions are necessarily being printed, so there may be
+  // target instructions not in this map.
+  for (unsigned i = 0, e = Instructions.size(); i != e; ++i)
+    CGIAWIMap.insert(std::make_pair(Instructions[i].CGI, &Instructions[i]));
+}
+
+void AsmWriterEmitter::run(raw_ostream &O) {
   EmitPrintInstruction(O);
   EmitGetRegisterName(O);
   EmitPrintAliasInstruction(O);
 }
 
+
+namespace llvm {
+
+void EmitAsmWriter(RecordKeeper &RK, raw_ostream &OS) {
+  emitSourceFileHeader("Assembly Writer Source Fragment", OS);
+  AsmWriterEmitter(RK).run(OS);
+}
+
+} // End llvm namespace

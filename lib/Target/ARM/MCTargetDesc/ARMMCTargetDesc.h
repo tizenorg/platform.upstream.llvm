@@ -18,12 +18,17 @@
 #include <string>
 
 namespace llvm {
+class formatted_raw_ostream;
 class MCAsmBackend;
 class MCCodeEmitter;
 class MCContext;
 class MCInstrInfo;
+class MCInstPrinter;
 class MCObjectWriter;
+class MCRegisterInfo;
 class MCSubtargetInfo;
+class MCStreamer;
+class MCRelocationInfo;
 class StringRef;
 class Target;
 class raw_ostream;
@@ -31,7 +36,7 @@ class raw_ostream;
 extern Target TheARMTarget, TheThumbTarget;
 
 namespace ARM_MC {
-  std::string ParseARMTriple(StringRef TT);
+  std::string ParseARMTriple(StringRef TT, StringRef CPU);
 
   /// createARMMCSubtargetInfo - Create a ARM MCSubtargetInfo instance.
   /// This is exposed so Asm parser, etc. do not need to go through
@@ -40,11 +45,19 @@ namespace ARM_MC {
                                             StringRef FS);
 }
 
+MCStreamer *createMCAsmStreamer(MCContext &Ctx, formatted_raw_ostream &OS,
+                                bool isVerboseAsm, bool useLoc, bool useCFI,
+                                bool useDwarfDirectory,
+                                MCInstPrinter *InstPrint, MCCodeEmitter *CE,
+                                MCAsmBackend *TAB, bool ShowInst);
+
 MCCodeEmitter *createARMMCCodeEmitter(const MCInstrInfo &MCII,
+                                      const MCRegisterInfo &MRI,
                                       const MCSubtargetInfo &STI,
                                       MCContext &Ctx);
 
-MCAsmBackend *createARMAsmBackend(const Target &T, StringRef TT);
+MCAsmBackend *createARMAsmBackend(const Target &T, const MCRegisterInfo &MRI,
+                                  StringRef TT, StringRef CPU);
 
 /// createARMELFObjectWriter - Construct an ELF Mach-O object writer.
 MCObjectWriter *createARMELFObjectWriter(raw_ostream &OS,
@@ -56,6 +69,9 @@ MCObjectWriter *createARMMachObjectWriter(raw_ostream &OS,
                                           uint32_t CPUType,
                                           uint32_t CPUSubtype);
 
+
+/// createARMMachORelocationInfo - Construct ARM Mach-O relocation info.
+MCRelocationInfo *createARMMachORelocationInfo(MCContext &Ctx);
 } // End llvm namespace
 
 // Defines symbolic names for ARM registers.  This defines a mapping from

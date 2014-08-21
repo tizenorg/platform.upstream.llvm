@@ -1,4 +1,5 @@
-; RUN: llc < %s -fast-isel -mtriple=i386-apple-darwin | FileCheck %s
+; RUN: llc < %s -fast-isel -mtriple=i386-apple-darwin -mcpu=generic | FileCheck %s
+; RUN: llc < %s -fast-isel -mtriple=i386-apple-darwin -mcpu=atom | FileCheck -check-prefix=ATOM %s
 
 @src = external global i32
 
@@ -11,12 +12,19 @@ entry:
         store i32 %2, i32* @src
 	ret i32 %2
 ; This should fold one of the loads into the add.
-; CHECK: loadgv:
+; CHECK-LABEL: loadgv:
 ; CHECK: 	movl	L_src$non_lazy_ptr, %ecx
 ; CHECK: 	movl	(%ecx), %eax
 ; CHECK: 	addl	(%ecx), %eax
 ; CHECK: 	movl	%eax, (%ecx)
 ; CHECK: 	ret
+
+; ATOM:	loadgv:
+; ATOM:		movl    L_src$non_lazy_ptr, %ecx
+; ATOM:         movl    (%ecx), %eax
+; ATOM:         addl    (%ecx), %eax
+; ATOM:         movl    %eax, (%ecx)
+; ATOM:         ret
 
 }
 
@@ -30,5 +38,9 @@ entry:
 ; CHECK: _t:
 ; CHECK:	movl	$0, %eax
 ; CHECK:	movl	L_LotsStuff$non_lazy_ptr, %ecx
+
+; ATOM: _t:
+; ATOM:         movl    L_LotsStuff$non_lazy_ptr, %e{{..}}
+; ATOM:         movl    $0, %e{{..}}
 
 }

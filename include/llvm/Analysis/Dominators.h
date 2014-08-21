@@ -15,13 +15,13 @@
 #ifndef LLVM_ANALYSIS_DOMINATORS_H
 #define LLVM_ANALYSIS_DOMINATORS_H
 
-#include "llvm/Pass.h"
-#include "llvm/Function.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/GraphTraits.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/Function.h"
+#include "llvm/Pass.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/raw_ostream.h"
@@ -101,18 +101,18 @@ public:
     Children.clear();
   }
 
-  bool compare(DomTreeNodeBase<NodeT> *Other) {
+  bool compare(const DomTreeNodeBase<NodeT> *Other) const {
     if (getNumChildren() != Other->getNumChildren())
       return true;
 
-    SmallPtrSet<NodeT *, 4> OtherChildren;
-    for (iterator I = Other->begin(), E = Other->end(); I != E; ++I) {
-      NodeT *Nd = (*I)->getBlock();
+    SmallPtrSet<const NodeT *, 4> OtherChildren;
+    for (const_iterator I = Other->begin(), E = Other->end(); I != E; ++I) {
+      const NodeT *Nd = (*I)->getBlock();
       OtherChildren.insert(Nd);
     }
 
-    for (iterator I = begin(), E = end(); I != E; ++I) {
-      NodeT *N = (*I)->getBlock();
+    for (const_iterator I = begin(), E = end(); I != E; ++I) {
+      const NodeT *N = (*I)->getBlock();
       if (OtherChildren.count(N) == 0)
         return true;
     }
@@ -152,7 +152,7 @@ EXTERN_TEMPLATE_INSTANTIATION(class DomTreeNodeBase<BasicBlock>);
 EXTERN_TEMPLATE_INSTANTIATION(class DomTreeNodeBase<MachineBasicBlock>);
 
 template<class NodeT>
-static raw_ostream &operator<<(raw_ostream &o,
+inline raw_ostream &operator<<(raw_ostream &o,
                                const DomTreeNodeBase<NodeT> *Node) {
   if (Node->getBlock())
     WriteAsOperand(o, Node->getBlock(), false);
@@ -165,7 +165,7 @@ static raw_ostream &operator<<(raw_ostream &o,
 }
 
 template<class NodeT>
-static void PrintDomTree(const DomTreeNodeBase<NodeT> *N, raw_ostream &o,
+inline void PrintDomTree(const DomTreeNodeBase<NodeT> *N, raw_ostream &o,
                          unsigned Lev) {
   o.indent(2*Lev) << "[" << Lev << "] " << N;
   for (typename DomTreeNodeBase<NodeT>::const_iterator I = N->begin(),
@@ -346,7 +346,21 @@ public:
   DomTreeNodeBase<NodeT> *getRootNode() { return RootNode; }
   const DomTreeNodeBase<NodeT> *getRootNode() const { return RootNode; }
 
-  /// properlyDominates - Returns true iff this dominates N and this != N.
+  /// Get all nodes dominated by R, including R itself. Return true on success.
+  void getDescendants(NodeT *R, SmallVectorImpl<NodeT *> &Result) const {
+    const DomTreeNodeBase<NodeT> *RN = getNode(R);
+    SmallVector<const DomTreeNodeBase<NodeT> *, 8> WL;
+    WL.push_back(RN);
+    Result.clear();
+
+    while (!WL.empty()) {
+      const DomTreeNodeBase<NodeT> *N = WL.pop_back_val();
+      Result.push_back(N->getBlock());
+      WL.append(N->begin(), N->end());
+    }
+  }
+
+  /// properlyDominates - Returns true iff A dominates B and A != B.
   /// Note that this is not a constant time operation!
   ///
   bool properlyDominates(const DomTreeNodeBase<NodeT> *A,
@@ -663,8 +677,7 @@ public:
       // Initialize the roots list
       for (typename TraitsTy::nodes_iterator I = TraitsTy::nodes_begin(&F),
                                         E = TraitsTy::nodes_end(&F); I != E; ++I) {
-        if (std::distance(TraitsTy::child_begin(I),
-                          TraitsTy::child_end(I)) == 0)
+        if (TraitsTy::child_begin(I) == TraitsTy::child_end(I))
           addRoot(I);
 
         // Prepopulate maps so that we don't get iterator invalidation issues later.
@@ -705,6 +718,21 @@ DominatorTreeBase<NodeT>::properlyDominates(const NodeT *A, const NodeT *B) {
 
 EXTERN_TEMPLATE_INSTANTIATION(class DominatorTreeBase<BasicBlock>);
 
+class BasicBlockEdge {
+  const BasicBlock *Start;
+  const BasicBlock *End;
+public:
+  BasicBlockEdge(const BasicBlock *Start_, const BasicBlock *End_) :
+    Start(Start_), End(End_) { }
+  const BasicBlock *getStart() const {
+    return Start;
+  }
+  const BasicBlock *getEnd() const {
+    return End;
+  }
+  bool isSingleEdge() const;
+};
+
 //===-------------------------------------
 /// DominatorTree Class - Concrete subclass of DominatorTreeBase that is used to
 /// compute a normal dominator tree.
@@ -739,6 +767,12 @@ public:
 
   inline DomTreeNode *getRootNode() const {
     return DT->getRootNode();
+  }
+
+  /// Get all nodes dominated by R, including R itself. Return true on success.
+  void getDescendants(BasicBlock *R,
+                     SmallVectorImpl<BasicBlock *> &Result) const {
+    DT->getDescendants(R, Result);
   }
 
   /// compare - Return false if the other dominator tree matches this
@@ -778,6 +812,8 @@ public:
   bool dominates(const Instruction *Def, const Use &U) const;
   bool dominates(const Instruction *Def, const Instruction *User) const;
   bool dominates(const Instruction *Def, const BasicBlock *BB) const;
+  bool dominates(const BasicBlockEdge &BBE, const Use &U) const;
+  bool dominates(const BasicBlockEdge &BBE, const BasicBlock *BB) const;
 
   bool properlyDominates(const DomTreeNode *A, const DomTreeNode *B) const {
     return DT->properlyDominates(A, B);

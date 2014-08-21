@@ -1,5 +1,6 @@
-// RUN: llvm-tblgen %s | grep fufoo
-// XFAIL: vg_leak
+// RUN: llvm-tblgen %s | FileCheck %s
+
+// CHECK: fufoo
 
 class Y<string S> {
   string T = !strconcat(S, "foo");

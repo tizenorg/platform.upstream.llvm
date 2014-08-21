@@ -15,16 +15,20 @@
 #define HEXAGONINSTPRINTER_H
 
 #include "llvm/MC/MCInstPrinter.h"
+#include "llvm/MC/MCInstrInfo.h"
 
 namespace llvm {
+  class HexagonMCInst;
+
   class HexagonInstPrinter : public MCInstPrinter {
   public:
     explicit HexagonInstPrinter(const MCAsmInfo &MAI,
                                 const MCInstrInfo &MII,
                                 const MCRegisterInfo &MRI)
-      : MCInstPrinter(MAI, MII, MRI) {}
+      : MCInstPrinter(MAI, MII, MRI), MII(MII) {}
 
     virtual void printInst(const MCInst *MI, raw_ostream &O, StringRef Annot);
+    void printInst(const HexagonMCInst *MI, raw_ostream &O, StringRef Annot);
     virtual StringRef getOpcodeName(unsigned Opcode) const;
     void printInstruction(const MCInst *MI, raw_ostream &O);
     StringRef getRegName(unsigned RegNo) const;
@@ -33,16 +37,16 @@ namespace llvm {
     void printOperand(const MCInst *MI, unsigned OpNo, raw_ostream &O) const;
     void printImmOperand(const MCInst *MI, unsigned OpNo, raw_ostream &O) const;
     void printExtOperand(const MCInst *MI, unsigned OpNo, raw_ostream &O) const;
-    void printUnsignedImmOperand(const MCInst *MI, unsigned OpNo, raw_ostream &O)
-           const;
+    void printUnsignedImmOperand(const MCInst *MI, unsigned OpNo,
+                                 raw_ostream &O) const;
     void printNegImmOperand(const MCInst *MI, unsigned OpNo, raw_ostream &O)
            const;
     void printNOneImmOperand(const MCInst *MI, unsigned OpNo, raw_ostream &O)
            const;
     void printMEMriOperand(const MCInst *MI, unsigned OpNo, raw_ostream &O)
            const;
-    void printFrameIndexOperand(const MCInst *MI, unsigned OpNo, raw_ostream &O)
-           const;
+    void printFrameIndexOperand(const MCInst *MI, unsigned OpNo,
+                                raw_ostream &O) const;
     void printBranchOperand(const MCInst *MI, unsigned OpNo, raw_ostream &O)
            const;
     void printCallOperand(const MCInst *MI, unsigned OpNo, raw_ostream &O)
@@ -55,17 +59,27 @@ namespace llvm {
            const;
     void printJumpTable(const MCInst *MI, unsigned OpNo, raw_ostream &O) const;
 
-    void printConstantPool(const MCInst *MI, unsigned OpNo, raw_ostream &O) const;
+    void printConstantPool(const MCInst *MI, unsigned OpNo,
+                           raw_ostream &O) const;
 
     void printSymbolHi(const MCInst *MI, unsigned OpNo, raw_ostream &O) const
       { printSymbol(MI, OpNo, O, true); }
     void printSymbolLo(const MCInst *MI, unsigned OpNo, raw_ostream &O) const
       { printSymbol(MI, OpNo, O, false); }
 
-    bool isConstExtended(const MCInst *MI) const;
+    const MCInstrInfo &getMII() const {
+      return MII;
+    }
+
   protected:
     void printSymbol(const MCInst *MI, unsigned OpNo, raw_ostream &O, bool hi)
            const;
+
+    static const char PacketPadding;
+
+  private:
+    const MCInstrInfo &MII;
+
   };
 
 } // end namespace llvm

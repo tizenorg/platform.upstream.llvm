@@ -11,11 +11,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_OBJECT_OBJECT_FILE_H
-#define LLVM_OBJECT_OBJECT_FILE_H
+#ifndef LLVM_OBJECT_OBJECTFILE_H
+#define LLVM_OBJECT_OBJECTFILE_H
 
-#include "llvm/Object/Binary.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Object/Binary.h"
 #include "llvm/Support/DataTypes.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -28,12 +28,8 @@ namespace object {
 class ObjectFile;
 
 union DataRefImpl {
-  struct {
-    // ELF needs this for relocations. This entire union should probably be a
-    // char[max(8, sizeof(uintptr_t))] and require the impl to cast.
-    uint16_t a, b;
-    uint32_t c;
-  } w;
+  // This entire union should probably be a
+  // char[max(8, sizeof(uintptr_t))] and require the impl to cast.
   struct {
     uint32_t a, b;
   } d;
@@ -76,19 +72,20 @@ public:
   }
 };
 
-static bool operator ==(const DataRefImpl &a, const DataRefImpl &b) {
+inline bool operator==(const DataRefImpl &a, const DataRefImpl &b) {
   // Check bitwise identical. This is the only legal way to compare a union w/o
   // knowing which member is in use.
   return std::memcmp(&a, &b, sizeof(DataRefImpl)) == 0;
 }
 
-static bool operator <(const DataRefImpl &a, const DataRefImpl &b) {
+inline bool operator<(const DataRefImpl &a, const DataRefImpl &b) {
   // Check bitwise identical. This is the only legal way to compare a union w/o
   // knowing which member is in use.
   return std::memcmp(&a, &b, sizeof(DataRefImpl)) < 0;
 }
 
 class SymbolRef;
+typedef content_iterator<SymbolRef> symbol_iterator;
 
 /// RelocationRef - This is a value type class that represents a single
 /// relocation in the list of relocations in the object file.
@@ -107,7 +104,7 @@ public:
 
   error_code getAddress(uint64_t &Result) const;
   error_code getOffset(uint64_t &Result) const;
-  error_code getSymbol(SymbolRef &Result) const;
+  symbol_iterator getSymbol() const;
   error_code getType(uint64_t &Result) const;
 
   /// @brief Indicates whether this relocation should hidden when listing
@@ -119,18 +116,22 @@ public:
   ///
   /// This is for display purposes only.
   error_code getTypeName(SmallVectorImpl<char> &Result) const;
-  error_code getAdditionalInfo(int64_t &Result) const;
 
   /// @brief Get a string that represents the calculation of the value of this
   ///        relocation.
   ///
   /// This is for display purposes only.
   error_code getValueString(SmallVectorImpl<char> &Result) const;
+
+  DataRefImpl getRawDataRefImpl() const;
+  const ObjectFile *getObjectFile() const;
 };
 typedef content_iterator<RelocationRef> relocation_iterator;
 
 /// SectionRef - This is a value type class that represents a single section in
 /// the list of sections in the object file.
+class SectionRef;
+typedef content_iterator<SectionRef> section_iterator;
 class SectionRef {
   friend class SymbolRef;
   DataRefImpl SectionPimpl;
@@ -142,7 +143,7 @@ public:
   SectionRef(DataRefImpl SectionP, const ObjectFile *Owner);
 
   bool operator==(const SectionRef &Other) const;
-  bool operator <(const SectionRef &Other) const;
+  bool operator<(const SectionRef &Other) const;
 
   error_code getNext(SectionRef &Result) const;
 
@@ -161,15 +162,16 @@ public:
   error_code isRequiredForExecution(bool &Result) const;
   error_code isVirtual(bool &Result) const;
   error_code isZeroInit(bool &Result) const;
+  error_code isReadOnlyData(bool &Result) const;
 
   error_code containsSymbol(SymbolRef S, bool &Result) const;
 
   relocation_iterator begin_relocations() const;
   relocation_iterator end_relocations() const;
+  section_iterator getRelocatedSection() const;
 
   DataRefImpl getRawDataRefImpl() const;
 };
-typedef content_iterator<SectionRef> section_iterator;
 
 /// SymbolRef - This is a value type class that represents a single symbol in
 /// the list of symbols in the object file.
@@ -190,7 +192,7 @@ public:
     ST_Other
   };
 
-  enum Flags {
+  enum Flags LLVM_ENUM_INT_TYPE(unsigned) {
     SF_None            = 0,
     SF_Undefined       = 1U << 0,  // Symbol is defined in another object file
     SF_Global          = 1U << 1,  // Global symbol
@@ -205,33 +207,32 @@ public:
   SymbolRef(DataRefImpl SymbolP, const ObjectFile *Owner);
 
   bool operator==(const SymbolRef &Other) const;
-  bool operator <(const SymbolRef &Other) const;
+  bool operator<(const SymbolRef &Other) const;
 
   error_code getNext(SymbolRef &Result) const;
 
   error_code getName(StringRef &Result) const;
+  /// Returns the symbol virtual address (i.e. address at which it will be
+  /// mapped).
   error_code getAddress(uint64_t &Result) const;
   error_code getFileOffset(uint64_t &Result) const;
+  /// @brief Get the alignment of this symbol as the actual value (not log 2).
+  error_code getAlignment(uint32_t &Result) const;
   error_code getSize(uint64_t &Result) const;
   error_code getType(SymbolRef::Type &Result) const;
 
-  /// Returns the ascii char that should be displayed in a symbol table dump via
-  /// nm for this symbol.
-  error_code getNMTypeChar(char &Result) const;
-
   /// Get symbol flags (bitwise OR of SymbolRef::Flags)
   error_code getFlags(uint32_t &Result) const;
-
-  /// @brief Return true for common symbols such as uninitialized globals
-  error_code isCommon(bool &Result) const;
 
   /// @brief Get section this symbol is defined in reference to. Result is
   /// end_sections() if it is undefined or is an absolute symbol.
   error_code getSection(section_iterator &Result) const;
 
+  /// @brief Get value of the symbol in the symbol table.
+  error_code getValue(uint64_t &Val) const;
+
   DataRefImpl getRawDataRefImpl() const;
 };
-typedef content_iterator<SymbolRef> symbol_iterator;
 
 /// LibraryRef - This is a value type class that represents a single library in
 /// the list of libraries needed by a shared or dynamic object.
@@ -246,7 +247,7 @@ public:
   LibraryRef(DataRefImpl LibraryP, const ObjectFile *Owner);
 
   bool operator==(const LibraryRef &Other) const;
-  bool operator <(const LibraryRef &Other) const;
+  bool operator<(const LibraryRef &Other) const;
 
   error_code getNext(LibraryRef &Result) const;
 
@@ -261,14 +262,14 @@ const uint64_t UnknownAddressOrSize = ~0ULL;
 
 /// ObjectFile - This class is the base class for all object file types.
 /// Concrete instances of this object are created by createObjectFile, which
-/// figure out which type to create.
+/// figures out which type to create.
 class ObjectFile : public Binary {
   virtual void anchor();
-  ObjectFile(); // = delete
-  ObjectFile(const ObjectFile &other); // = delete
+  ObjectFile() LLVM_DELETED_FUNCTION;
+  ObjectFile(const ObjectFile &other) LLVM_DELETED_FUNCTION;
 
 protected:
-  ObjectFile(unsigned int Type, MemoryBuffer *source, error_code &ec);
+  ObjectFile(unsigned int Type, MemoryBuffer *source);
 
   const uint8_t *base() const {
     return reinterpret_cast<const uint8_t *>(Data->getBufferStart());
@@ -285,16 +286,17 @@ protected:
   friend class SymbolRef;
   virtual error_code getSymbolNext(DataRefImpl Symb, SymbolRef &Res) const = 0;
   virtual error_code getSymbolName(DataRefImpl Symb, StringRef &Res) const = 0;
-  virtual error_code getSymbolAddress(DataRefImpl Symb, uint64_t &Res) const =0;
-  virtual error_code getSymbolFileOffset(DataRefImpl Symb, uint64_t &Res) const =0;
+  virtual error_code getSymbolAddress(DataRefImpl Symb, uint64_t &Res) const = 0;
+  virtual error_code getSymbolFileOffset(DataRefImpl Symb, uint64_t &Res)const=0;
+  virtual error_code getSymbolAlignment(DataRefImpl Symb, uint32_t &Res) const;
   virtual error_code getSymbolSize(DataRefImpl Symb, uint64_t &Res) const = 0;
   virtual error_code getSymbolType(DataRefImpl Symb,
                                    SymbolRef::Type &Res) const = 0;
-  virtual error_code getSymbolNMTypeChar(DataRefImpl Symb, char &Res) const = 0;
   virtual error_code getSymbolFlags(DataRefImpl Symb,
                                     uint32_t &Res) const = 0;
   virtual error_code getSymbolSection(DataRefImpl Symb,
                                       section_iterator &Res) const = 0;
+  virtual error_code getSymbolValue(DataRefImpl Symb, uint64_t &Val) const = 0;
 
   // Same as above for SectionRef.
   friend class SectionRef;
@@ -312,11 +314,12 @@ protected:
   // A section is 'virtual' if its contents aren't present in the object image.
   virtual error_code isSectionVirtual(DataRefImpl Sec, bool &Res) const = 0;
   virtual error_code isSectionZeroInit(DataRefImpl Sec, bool &Res) const = 0;
+  virtual error_code isSectionReadOnlyData(DataRefImpl Sec, bool &Res) const =0;
   virtual error_code sectionContainsSymbol(DataRefImpl Sec, DataRefImpl Symb,
                                            bool &Result) const = 0;
-  virtual relocation_iterator getSectionRelBegin(DataRefImpl Sec) const = 0;
-  virtual relocation_iterator getSectionRelEnd(DataRefImpl Sec) const = 0;
-
+  virtual relocation_iterator section_rel_begin(DataRefImpl Sec) const = 0;
+  virtual relocation_iterator section_rel_end(DataRefImpl Sec) const = 0;
+  virtual section_iterator getRelocatedSection(DataRefImpl Sec) const;
 
   // Same as above for RelocationRef.
   friend class RelocationRef;
@@ -326,14 +329,11 @@ protected:
                                           uint64_t &Res) const =0;
   virtual error_code getRelocationOffset(DataRefImpl Rel,
                                          uint64_t &Res) const =0;
-  virtual error_code getRelocationSymbol(DataRefImpl Rel,
-                                         SymbolRef &Res) const = 0;
+  virtual symbol_iterator getRelocationSymbol(DataRefImpl Rel) const = 0;
   virtual error_code getRelocationType(DataRefImpl Rel,
                                        uint64_t &Res) const = 0;
   virtual error_code getRelocationTypeName(DataRefImpl Rel,
                                        SmallVectorImpl<char> &Result) const = 0;
-  virtual error_code getRelocationAdditionalInfo(DataRefImpl Rel,
-                                                 int64_t &Res) const = 0;
   virtual error_code getRelocationValueString(DataRefImpl Rel,
                                        SmallVectorImpl<char> &Result) const = 0;
   virtual error_code getRelocationHidden(DataRefImpl Rel, bool &Result) const {
@@ -382,7 +382,6 @@ public:
   static inline bool classof(const Binary *v) {
     return v->isObject();
   }
-  static inline bool classof(const ObjectFile *v) { return true; }
 
 public:
   static ObjectFile *createCOFFObjectFile(MemoryBuffer *Object);
@@ -399,7 +398,7 @@ inline bool SymbolRef::operator==(const SymbolRef &Other) const {
   return SymbolPimpl == Other.SymbolPimpl;
 }
 
-inline bool SymbolRef::operator <(const SymbolRef &Other) const {
+inline bool SymbolRef::operator<(const SymbolRef &Other) const {
   return SymbolPimpl < Other.SymbolPimpl;
 }
 
@@ -419,12 +418,12 @@ inline error_code SymbolRef::getFileOffset(uint64_t &Result) const {
   return OwningObject->getSymbolFileOffset(SymbolPimpl, Result);
 }
 
-inline error_code SymbolRef::getSize(uint64_t &Result) const {
-  return OwningObject->getSymbolSize(SymbolPimpl, Result);
+inline error_code SymbolRef::getAlignment(uint32_t &Result) const {
+  return OwningObject->getSymbolAlignment(SymbolPimpl, Result);
 }
 
-inline error_code SymbolRef::getNMTypeChar(char &Result) const {
-  return OwningObject->getSymbolNMTypeChar(SymbolPimpl, Result);
+inline error_code SymbolRef::getSize(uint64_t &Result) const {
+  return OwningObject->getSymbolSize(SymbolPimpl, Result);
 }
 
 inline error_code SymbolRef::getFlags(uint32_t &Result) const {
@@ -437,6 +436,10 @@ inline error_code SymbolRef::getSection(section_iterator &Result) const {
 
 inline error_code SymbolRef::getType(SymbolRef::Type &Result) const {
   return OwningObject->getSymbolType(SymbolPimpl, Result);
+}
+
+inline error_code SymbolRef::getValue(uint64_t &Val) const {
+  return OwningObject->getSymbolValue(SymbolPimpl, Val);
 }
 
 inline DataRefImpl SymbolRef::getRawDataRefImpl() const {
@@ -454,7 +457,7 @@ inline bool SectionRef::operator==(const SectionRef &Other) const {
   return SectionPimpl == Other.SectionPimpl;
 }
 
-inline bool SectionRef::operator <(const SectionRef &Other) const {
+inline bool SectionRef::operator<(const SectionRef &Other) const {
   return SectionPimpl < Other.SectionPimpl;
 }
 
@@ -506,17 +509,25 @@ inline error_code SectionRef::isZeroInit(bool &Result) const {
   return OwningObject->isSectionZeroInit(SectionPimpl, Result);
 }
 
+inline error_code SectionRef::isReadOnlyData(bool &Result) const {
+  return OwningObject->isSectionReadOnlyData(SectionPimpl, Result);
+}
+
 inline error_code SectionRef::containsSymbol(SymbolRef S, bool &Result) const {
   return OwningObject->sectionContainsSymbol(SectionPimpl, S.SymbolPimpl,
                                              Result);
 }
 
 inline relocation_iterator SectionRef::begin_relocations() const {
-  return OwningObject->getSectionRelBegin(SectionPimpl);
+  return OwningObject->section_rel_begin(SectionPimpl);
 }
 
 inline relocation_iterator SectionRef::end_relocations() const {
-  return OwningObject->getSectionRelEnd(SectionPimpl);
+  return OwningObject->section_rel_end(SectionPimpl);
+}
+
+inline section_iterator SectionRef::getRelocatedSection() const {
+  return OwningObject->getRelocatedSection(SectionPimpl);
 }
 
 inline DataRefImpl SectionRef::getRawDataRefImpl() const {
@@ -545,8 +556,8 @@ inline error_code RelocationRef::getOffset(uint64_t &Result) const {
   return OwningObject->getRelocationOffset(RelocationPimpl, Result);
 }
 
-inline error_code RelocationRef::getSymbol(SymbolRef &Result) const {
-  return OwningObject->getRelocationSymbol(RelocationPimpl, Result);
+inline symbol_iterator RelocationRef::getSymbol() const {
+  return OwningObject->getRelocationSymbol(RelocationPimpl);
 }
 
 inline error_code RelocationRef::getType(uint64_t &Result) const {
@@ -558,10 +569,6 @@ inline error_code RelocationRef::getTypeName(SmallVectorImpl<char> &Result)
   return OwningObject->getRelocationTypeName(RelocationPimpl, Result);
 }
 
-inline error_code RelocationRef::getAdditionalInfo(int64_t &Result) const {
-  return OwningObject->getRelocationAdditionalInfo(RelocationPimpl, Result);
-}
-
 inline error_code RelocationRef::getValueString(SmallVectorImpl<char> &Result)
   const {
   return OwningObject->getRelocationValueString(RelocationPimpl, Result);
@@ -570,6 +577,15 @@ inline error_code RelocationRef::getValueString(SmallVectorImpl<char> &Result)
 inline error_code RelocationRef::getHidden(bool &Result) const {
   return OwningObject->getRelocationHidden(RelocationPimpl, Result);
 }
+
+inline DataRefImpl RelocationRef::getRawDataRefImpl() const {
+  return RelocationPimpl;
+}
+
+inline const ObjectFile *RelocationRef::getObjectFile() const {
+  return OwningObject;
+}
+
 // Inline function definitions.
 inline LibraryRef::LibraryRef(DataRefImpl LibraryP, const ObjectFile *Owner)
   : LibraryPimpl(LibraryP)
@@ -579,7 +595,7 @@ inline bool LibraryRef::operator==(const LibraryRef &Other) const {
   return LibraryPimpl == Other.LibraryPimpl;
 }
 
-inline bool LibraryRef::operator <(const LibraryRef &Other) const {
+inline bool LibraryRef::operator<(const LibraryRef &Other) const {
   return LibraryPimpl < Other.LibraryPimpl;
 }
 

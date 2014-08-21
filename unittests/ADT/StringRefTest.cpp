@@ -7,11 +7,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "gtest/gtest.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
+#include "gtest/gtest.h"
 using namespace llvm;
 
 namespace llvm {
@@ -60,6 +61,9 @@ TEST(StringRefTest, StringOps) {
   EXPECT_EQ( 0, StringRef("AaB").compare_lower("aab"));
   EXPECT_EQ( 1, StringRef("AaB").compare_lower("AAA"));
   EXPECT_EQ(-1, StringRef("AaB").compare_lower("aaBb"));
+  EXPECT_EQ(-1, StringRef("AaB").compare_lower("bb"));
+  EXPECT_EQ( 1, StringRef("aaBb").compare_lower("AaB"));
+  EXPECT_EQ( 1, StringRef("bb").compare_lower("AaB"));
   EXPECT_EQ( 1, StringRef("AaB").compare_lower("aA"));
   EXPECT_EQ( 1, StringRef("\xFF").compare_lower("\1"));
 
@@ -221,19 +225,65 @@ TEST(StringRefTest, Split2) {
   EXPECT_TRUE(parts == expected);
 }
 
+TEST(StringRefTest, Trim) {
+  StringRef Str0("hello");
+  StringRef Str1(" hello ");
+  StringRef Str2("  hello  ");
+
+  EXPECT_EQ(StringRef("hello"), Str0.rtrim());
+  EXPECT_EQ(StringRef(" hello"), Str1.rtrim());
+  EXPECT_EQ(StringRef("  hello"), Str2.rtrim());
+  EXPECT_EQ(StringRef("hello"), Str0.ltrim());
+  EXPECT_EQ(StringRef("hello "), Str1.ltrim());
+  EXPECT_EQ(StringRef("hello  "), Str2.ltrim());
+  EXPECT_EQ(StringRef("hello"), Str0.trim());
+  EXPECT_EQ(StringRef("hello"), Str1.trim());
+  EXPECT_EQ(StringRef("hello"), Str2.trim());
+
+  EXPECT_EQ(StringRef("ello"), Str0.trim("hhhhhhhhhhh"));
+
+  EXPECT_EQ(StringRef(""), StringRef("").trim());
+  EXPECT_EQ(StringRef(""), StringRef(" ").trim());
+  EXPECT_EQ(StringRef("\0", 1), StringRef(" \0 ", 3).trim());
+  EXPECT_EQ(StringRef("\0\0", 2), StringRef("\0\0", 2).trim());
+  EXPECT_EQ(StringRef("x"), StringRef("\0\0x\0\0", 5).trim(StringRef("\0", 1)));
+}
+
 TEST(StringRefTest, StartsWith) {
   StringRef Str("hello");
+  EXPECT_TRUE(Str.startswith(""));
   EXPECT_TRUE(Str.startswith("he"));
   EXPECT_FALSE(Str.startswith("helloworld"));
   EXPECT_FALSE(Str.startswith("hi"));
 }
 
+TEST(StringRefTest, StartsWithLower) {
+  StringRef Str("heLLo");
+  EXPECT_TRUE(Str.startswith_lower(""));
+  EXPECT_TRUE(Str.startswith_lower("he"));
+  EXPECT_TRUE(Str.startswith_lower("hell"));
+  EXPECT_TRUE(Str.startswith_lower("HELlo"));
+  EXPECT_FALSE(Str.startswith_lower("helloworld"));
+  EXPECT_FALSE(Str.startswith_lower("hi"));
+}
+
 TEST(StringRefTest, EndsWith) {
   StringRef Str("hello");
+  EXPECT_TRUE(Str.endswith(""));
   EXPECT_TRUE(Str.endswith("lo"));
   EXPECT_FALSE(Str.endswith("helloworld"));
   EXPECT_FALSE(Str.endswith("worldhello"));
   EXPECT_FALSE(Str.endswith("so"));
+}
+
+TEST(StringRefTest, EndsWithLower) {
+  StringRef Str("heLLo");
+  EXPECT_TRUE(Str.endswith_lower(""));
+  EXPECT_TRUE(Str.endswith_lower("lo"));
+  EXPECT_TRUE(Str.endswith_lower("LO"));
+  EXPECT_TRUE(Str.endswith_lower("ELlo"));
+  EXPECT_FALSE(Str.endswith_lower("helloworld"));
+  EXPECT_FALSE(Str.endswith_lower("hi"));
 }
 
 TEST(StringRefTest, Find) {
@@ -267,6 +317,10 @@ TEST(StringRefTest, Find) {
   EXPECT_EQ(1U, Str.find_first_not_of('h'));
   EXPECT_EQ(4U, Str.find_first_not_of("hel"));
   EXPECT_EQ(StringRef::npos, Str.find_first_not_of("hello"));
+
+  EXPECT_EQ(3U, Str.find_last_not_of('o'));
+  EXPECT_EQ(1U, Str.find_last_not_of("lo"));
+  EXPECT_EQ(StringRef::npos, Str.find_last_not_of("helo"));
 }
 
 TEST(StringRefTest, Count) {
@@ -426,6 +480,55 @@ TEST(StringRefTest, getAsInteger) {
       ASSERT_TRUE(S64Success);
     }
   }
+}
+
+
+static const char* BadStrings[] = {
+    "18446744073709551617"  // value just over max
+  , "123456789012345678901" // value way too large
+  , "4t23v"                 // illegal decimal characters
+  , "0x123W56"              // illegal hex characters
+  , "0b2"                   // illegal bin characters
+  , "08"                    // illegal oct characters
+  , "0o8"                   // illegal oct characters
+  , "-123"                  // negative unsigned value
+};
+
+
+TEST(StringRefTest, getAsUnsignedIntegerBadStrings) {
+  unsigned long long U64;
+  for (size_t i = 0; i < array_lengthof(BadStrings); ++i) {
+    bool IsBadNumber = StringRef(BadStrings[i]).getAsInteger(0, U64);
+    ASSERT_TRUE(IsBadNumber);
+  }
+}
+
+static const char *join_input[] = { "a", "b", "c" };
+static const char join_result1[] = "a";
+static const char join_result2[] = "a:b:c";
+static const char join_result3[] = "a::b::c";
+
+TEST(StringRefTest, joinStrings) {
+  std::vector<StringRef> v1;
+  std::vector<std::string> v2;
+  for (size_t i = 0; i < array_lengthof(join_input); ++i) {
+    v1.push_back(join_input[i]);
+    v2.push_back(join_input[i]);
+  }
+
+  bool v1_join1 = join(v1.begin(), v1.begin() + 1, ":") == join_result1;
+  EXPECT_TRUE(v1_join1);
+  bool v1_join2 = join(v1.begin(), v1.end(), ":") == join_result2;
+  EXPECT_TRUE(v1_join2);
+  bool v1_join3 = join(v1.begin(), v1.end(), "::") == join_result3;
+  EXPECT_TRUE(v1_join3);
+
+  bool v2_join1 = join(v2.begin(), v2.begin() + 1, ":") == join_result1;
+  EXPECT_TRUE(v2_join1);
+  bool v2_join2 = join(v2.begin(), v2.end(), ":") == join_result2;
+  EXPECT_TRUE(v2_join2);
+  bool v2_join3 = join(v2.begin(), v2.end(), "::") == join_result3;
+  EXPECT_TRUE(v2_join3);
 }
 
 } // end anonymous namespace

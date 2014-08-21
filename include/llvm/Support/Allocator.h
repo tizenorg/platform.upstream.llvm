@@ -15,12 +15,12 @@
 #define LLVM_SUPPORT_ALLOCATOR_H
 
 #include "llvm/Support/AlignOf.h"
-#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/DataTypes.h"
+#include "llvm/Support/MathExtras.h"
 #include <algorithm>
 #include <cassert>
-#include <cstdlib>
 #include <cstddef>
+#include <cstdlib>
 
 namespace llvm {
 template <typename T> struct ReferenceAdder { typedef T& result; };
@@ -79,8 +79,8 @@ class MallocSlabAllocator : public SlabAllocator {
 public:
   MallocSlabAllocator() : Allocator() { }
   virtual ~MallocSlabAllocator();
-  virtual MemSlab *Allocate(size_t Size);
-  virtual void Deallocate(MemSlab *Slab);
+  virtual MemSlab *Allocate(size_t Size) LLVM_OVERRIDE;
+  virtual void Deallocate(MemSlab *Slab) LLVM_OVERRIDE;
 };
 
 /// BumpPtrAllocator - This allocator is useful for containers that need
@@ -88,8 +88,8 @@ public:
 /// allocating memory, and never deletes it until the entire block is dead. This
 /// makes allocation speedy, but must only be used when the trade-off is ok.
 class BumpPtrAllocator {
-  BumpPtrAllocator(const BumpPtrAllocator &); // do not implement
-  void operator=(const BumpPtrAllocator &);   // do not implement
+  BumpPtrAllocator(const BumpPtrAllocator &) LLVM_DELETED_FUNCTION;
+  void operator=(const BumpPtrAllocator &) LLVM_DELETED_FUNCTION;
 
   /// SlabSize - Allocate data into slabs of this size unless we get an
   /// allocation above SizeThreshold.
@@ -98,6 +98,9 @@ class BumpPtrAllocator {
   /// SizeThreshold - For any allocation larger than this threshold, we should
   /// allocate a separate slab.
   size_t SizeThreshold;
+
+  /// \brief the default allocator used if one is not provided
+  MallocSlabAllocator DefaultSlabAllocator;
 
   /// Allocator - The underlying allocator we use to get slabs of memory.  This
   /// defaults to MallocSlabAllocator, which wraps malloc, but it could be
@@ -133,12 +136,10 @@ class BumpPtrAllocator {
   /// one.
   void DeallocateSlabs(MemSlab *Slab);
 
-  static MallocSlabAllocator DefaultSlabAllocator;
-
   template<typename T> friend class SpecificBumpPtrAllocator;
 public:
-  BumpPtrAllocator(size_t size = 4096, size_t threshold = 4096,
-                   SlabAllocator &allocator = DefaultSlabAllocator);
+  BumpPtrAllocator(size_t size = 4096, size_t threshold = 4096);
+  BumpPtrAllocator(size_t size, size_t threshold, SlabAllocator &allocator);
   ~BumpPtrAllocator();
 
   /// Reset - Deallocate all but the current slab and reset the current pointer
@@ -189,8 +190,10 @@ template <typename T>
 class SpecificBumpPtrAllocator {
   BumpPtrAllocator Allocator;
 public:
-  SpecificBumpPtrAllocator(size_t size = 4096, size_t threshold = 4096,
-              SlabAllocator &allocator = BumpPtrAllocator::DefaultSlabAllocator)
+  SpecificBumpPtrAllocator(size_t size = 4096, size_t threshold = 4096)
+    : Allocator(size, threshold) {}
+  SpecificBumpPtrAllocator(size_t size, size_t threshold,
+                           SlabAllocator &allocator)
     : Allocator(size, threshold, allocator) {}
 
   ~SpecificBumpPtrAllocator() {

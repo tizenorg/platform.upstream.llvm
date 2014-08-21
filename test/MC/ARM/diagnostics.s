@@ -1,5 +1,7 @@
 @ RUN: not llvm-mc -triple=armv7-apple-darwin < %s 2> %t
 @ RUN: FileCheck --check-prefix=CHECK-ERRORS < %t %s
+@ RUN: not llvm-mc -triple=armv8 < %s 2> %t
+@ RUN: FileCheck --check-prefix=CHECK-ERRORS-V8 < %t %s
 
 @ Check for various assembly diagnostic messages on invalid input.
 
@@ -47,11 +49,71 @@
 @ CHECK-ERRORS: error: immediate shift value out of range
 @ CHECK-ERRORS:         adc r4, r5, r6, ror #32
 
+        @ Out of range shift immediate values for load/store.
+        str r1, [r2, r3, lsl #invalid]
+        ldr r4, [r5], r6, lsl #-1
+        pld r4, [r5, r6, lsl #32]
+        str r4, [r5], r6, lsr #-1
+        ldr r4, [r5, r6, lsr #33]
+        pld r4, [r5, r6, asr #-1]
+        str r4, [r5, r6, asr #33]
+        ldr r4, [r5, r6, ror #-1]
+        pld r4, [r5, r6, ror #32]
+        pld r4, [r5, r6, rrx #0]
 
+@ CHECK-ERRORS: error: shift amount must be an immediate
+@ CHECK-ERRORS:         str r1, [r2, r3, lsl #invalid]
+@ CHECK-ERRORS:                              ^
+@ CHECK-ERRORS: error: immediate shift value out of range
+@ CHECK-ERRORS:         ldr r4, [r5], r6, lsl #-1
+@ CHECK-ERRORS:                              ^
+@ CHECK-ERRORS: error: immediate shift value out of range
+@ CHECK-ERRORS:         pld r4, [r5, r6, lsl #32]
+@ CHECK-ERRORS:                              ^
+@ CHECK-ERRORS: error: immediate shift value out of range
+@ CHECK-ERRORS:         str r4, [r5], r6, lsr #-1
+@ CHECK-ERRORS:                              ^
+@ CHECK-ERRORS: error: immediate shift value out of range
+@ CHECK-ERRORS:         ldr r4, [r5, r6, lsr #33]
+@ CHECK-ERRORS:                              ^
+@ CHECK-ERRORS: error: immediate shift value out of range
+@ CHECK-ERRORS:         pld r4, [r5, r6, asr #-1]
+@ CHECK-ERRORS:                              ^
+@ CHECK-ERRORS: error: immediate shift value out of range
+@ CHECK-ERRORS:         str r4, [r5, r6, asr #33]
+@ CHECK-ERRORS:                              ^
+@ CHECK-ERRORS: error: immediate shift value out of range
+@ CHECK-ERRORS:         ldr r4, [r5, r6, ror #-1]
+@ CHECK-ERRORS:                              ^
+@ CHECK-ERRORS: error: immediate shift value out of range
+@ CHECK-ERRORS:         pld r4, [r5, r6, ror #32]
+@ CHECK-ERRORS: error: ']' expected
+@ CHECK-ERRORS:         pld r4, [r5, r6, rrx #0]
+        
         @ Out of range 16-bit immediate on BKPT
         bkpt #65536
 
 @ CHECK-ERRORS: error: invalid operand for instruction
+
+        @ Out of range immediates for v8 HLT instruction.
+        hlt #65536
+        hlt #-1
+@CHECK-ERRORS-V8: error: invalid operand for instruction
+@CHECK-ERRORS-V8:         hlt #65536
+@CHECK-ERRORS-V8:              ^
+@CHECK-ERRORS-V8: error: invalid operand for instruction
+@CHECK-ERRORS-V8:         hlt #-1
+@CHECK-ERRORS-V8:              ^
+
+        @ Illegal condition code for v8 HLT instruction.
+        hlteq #2
+        hltlt #23
+@CHECK-ERRORS-V8: error: instruction 'hlt' is not predicable, but condition code specified
+@CHECK-ERRORS-V8:        hlteq #2
+@CHECK-ERRORS-V8:        ^
+@CHECK-ERRORS-V8: error: instruction 'hlt' is not predicable, but condition code specified
+@CHECK-ERRORS-V8:        hltlt #23
+@CHECK-ERRORS-V8:        ^
 
         @ Out of range 4 and 3 bit immediates on CDP[2]
 
@@ -70,8 +132,8 @@
         dbg #-1
         dbg #16
 
-@ CHECK-ERRORS: error: invalid operand for instruction
-@ CHECK-ERRORS: error: invalid operand for instruction
+@ CHECK-ERRORS: error: immediate operand must be in the range [0,15]
+@ CHECK-ERRORS: error: immediate operand must be in the range [0,15]
 @  Double-check that we're synced up with the right diagnostics.
 @ CHECK-ERRORS: dbg #16
 
@@ -86,9 +148,14 @@
 @ CHECK-ERRORS: error: invalid operand for instruction
 @ CHECK-ERRORS: error: invalid operand for instruction
 @ CHECK-ERRORS: error: invalid operand for instruction
-@ CHECK-ERRORS: error: invalid operand for instruction
-@ CHECK-ERRORS: error: invalid operand for instruction
+@ CHECK-ERRORS: error: immediate operand must be in the range [0,15]
+@ CHECK-ERRORS: error: immediate operand must be in the range [0,15]
 
+        @ p10 and p11 are reserved for NEON
+        mcr p10, #2, r5, c1, c1, #4
+        mcrr p11, #8, r5, r4, c1
+@ CHECK-ERRORS: error: invalid operand for instruction
+@ CHECK-ERRORS: error: invalid operand for instruction
 
         @ Out of range immediate for MOV
         movw r9, 0x10000
@@ -115,8 +182,8 @@
 @ CHECK-ERRORS: error: invalid operand for instruction
 @ CHECK-ERRORS: error: invalid operand for instruction
 @ CHECK-ERRORS: error: invalid operand for instruction
-@ CHECK-ERRORS: error: invalid operand for instruction
-@ CHECK-ERRORS: error: invalid operand for instruction
+@ CHECK-ERRORS: error: immediate operand must be in the range [0,15]
+@ CHECK-ERRORS: error: immediate operand must be in the range [0,15]
 
         @ Shifter operand validation for PKH instructions.
         pkhbt r2, r2, r3, lsl #-1
@@ -315,3 +382,86 @@
 @ CHECK-ERRORS: error: coprocessor option must be an immediate in range [0, 255]
 @ CHECK-ERRORS:         ldc2 p2, c8, [r1], { -1 }
 @ CHECK-ERRORS:                              ^
+
+        @ Bad CPS instruction format.
+        cps f,#1
+@ CHECK-ERRORS: error: invalid operand for instruction
+@ CHECK-ERRORS:         cps f,#1
+@ CHECK-ERRORS:               ^
+
+        @ Bad operands for msr
+        msr #0, #0
+        msr foo, #0
+@ CHECK-ERRORS: error: invalid operand for instruction
+@ CHECK-ERRORS:         msr #0, #0
+@ CHECK-ERRORS:             ^
+@ CHECK-ERRORS: error: invalid operand for instruction
+@ CHECK-ERRORS:         msr foo, #0
+@ CHECK-ERRORS:             ^
+
+        isb #-1
+        isb #16
+@ CHECK-ERRORS: error: immediate value out of range
+@ CHECK-ERRORS: error: immediate value out of range
+
+        nop.n
+@ CHECK-ERRORS: error: instruction with .n (narrow) qualifier not allowed in arm mode
+
+	dmbeq #5
+	dsble #15
+	isblo #7
+@ CHECK-ERRORS: error: instruction 'dmb' is not predicable, but condition code specified
+@ CHECK-ERRORS: error: instruction 'dsb' is not predicable, but condition code specified
+@ CHECK-ERRORS: error: instruction 'isb' is not predicable, but condition code specified
+
+	dmblt
+	dsbne
+	isbeq
+@ CHECK-ERRORS: error: instruction 'dmb' is not predicable, but condition code specified
+@ CHECK-ERRORS: error: instruction 'dsb' is not predicable, but condition code specified
+@ CHECK-ERRORS: error: instruction 'isb' is not predicable, but condition code specified
+
+        mcr2le  p7, #1, r5, c1, c1, #4
+        mcrr2ne p7, #15, r5, r4, c1
+        mrc2lo  p14, #0, r1, c1, c2, #4
+        mrrc2lo  p7, #1, r5, r4, c1
+        cdp2hi   p10, #0, c6, c12, c0, #7
+@ CHECK-ERRORS: error: instruction 'mcr2' is not predicable, but condition code specified
+@ CHECK-ERRORS: error: instruction 'mcrr2' is not predicable, but condition code specified
+@ CHECK-ERRORS: error: instruction 'mrc2' is not predicable, but condition code specified
+@ CHECK-ERRORS: error: instruction 'mrrc2' is not predicable, but condition code specified
+@ CHECK-ERRORS: error: instruction 'cdp2' is not predicable, but condition code specified
+
+        bkpteq #7
+@ CHECK-ERRORS: error: instruction 'bkpt' is not predicable, but condition code specified
+
+        ldm r2!, {r2, r3}
+        ldmdb r2!, {r2, r3}
+        ldmda r2!, {r2, r3}
+        popeq {sp}
+@ CHECK-ERRORS: error: writeback register not allowed in register list
+@ CHECK-ERRORS: error: writeback register not allowed in register list
+@ CHECK-ERRORS: error: writeback register not allowed in register list
+@ CHECK-ERRORS: error: writeback register not allowed in register list
+
+        vrintz.f32.f32 s0, s1
+        vrintr.f32 s0, s1
+        vrintx.f64.f64 d2, d5
+        vrintz.f64 d10, d9
+        vrinta.f32.f32 s6, s7
+        vrintn.f32 s8, s9
+        vrintp.f64.f64 d10, d11
+        vrintm.f64 d12, d13
+@ CHECK-ERRORS: error: instruction requires: FPARMv8
+@ CHECK-ERRORS: error: instruction requires: FPARMv8
+@ CHECK-ERRORS: error: instruction requires: FPARMv8
+@ CHECK-ERRORS: error: instruction requires: FPARMv8
+@ CHECK-ERRORS: error: instruction requires: FPARMv8
+@ CHECK-ERRORS: error: instruction requires: FPARMv8
+@ CHECK-ERRORS: error: instruction requires: FPARMv8
+@ CHECK-ERRORS: error: instruction requires: FPARMv8
+
+        stm sp!, {r0, pc}^
+        ldm sp!, {r0}^
+@ CHECK-ERRORS: error: system STM cannot have writeback register
+@ CHECK-ERRORS: error: writeback register only allowed on system LDM if PC in register-list

@@ -11,12 +11,12 @@
 #include "ARM.h"
 #include "ARMMachineFunctionInfo.h"
 #include "Thumb2InstrInfo.h"
+#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineInstrBundle.h"
-#include "llvm/CodeGen/MachineFunctionPass.h"
-#include "llvm/ADT/SmallSet.h"
-#include "llvm/ADT/Statistic.h"
 using namespace llvm;
 
 STATISTIC(NumITs,        "Number of IT blocks inserted");
@@ -24,12 +24,11 @@ STATISTIC(NumMovedInsts, "Number of predicated instructions moved");
 
 namespace {
   class Thumb2ITBlockPass : public MachineFunctionPass {
-    bool PreRegAlloc;
-
   public:
     static char ID;
     Thumb2ITBlockPass() : MachineFunctionPass(ID) {}
 
+    bool restrictIT;
     const Thumb2InstrInfo *TII;
     const TargetRegisterInfo *TRI;
     ARMFunctionInfo *AFI;
@@ -75,17 +74,15 @@ static void TrackDefUses(MachineInstr *MI,
 
   for (unsigned i = 0, e = LocalUses.size(); i != e; ++i) {
     unsigned Reg = LocalUses[i];
-    Uses.insert(Reg);
-    for (const uint16_t *Subreg = TRI->getSubRegisters(Reg);
-         *Subreg; ++Subreg)
+    for (MCSubRegIterator Subreg(Reg, TRI, /*IncludeSelf=*/true);
+         Subreg.isValid(); ++Subreg)
       Uses.insert(*Subreg);
   }
 
   for (unsigned i = 0, e = LocalDefs.size(); i != e; ++i) {
     unsigned Reg = LocalDefs[i];
-    Defs.insert(Reg);
-    for (const uint16_t *Subreg = TRI->getSubRegisters(Reg);
-         *Subreg; ++Subreg)
+    for (MCSubRegIterator Subreg(Reg, TRI, /*IncludeSelf=*/true);
+         Subreg.isValid(); ++Subreg)
       Defs.insert(*Subreg);
     if (Reg == ARM::CPSR)
       continue;
@@ -196,37 +193,42 @@ bool Thumb2ITBlockPass::InsertITInstructions(MachineBasicBlock &MBB) {
     // Form IT block.
     ARMCC::CondCodes OCC = ARMCC::getOppositeCondition(CC);
     unsigned Mask = 0, Pos = 3;
-    // Branches, including tricky ones like LDM_RET, need to end an IT
-    // block so check the instruction we just put in the block.
-    for (; MBBI != E && Pos &&
-           (!MI->isBranch() && !MI->isReturn()) ; ++MBBI) {
-      if (MBBI->isDebugValue())
-        continue;
 
-      MachineInstr *NMI = &*MBBI;
-      MI = NMI;
-
-      unsigned NPredReg = 0;
-      ARMCC::CondCodes NCC = getITInstrPredicate(NMI, NPredReg);
-      if (NCC == CC || NCC == OCC) {
-        Mask |= (NCC & 1) << Pos;
-        // Add implicit use of ITSTATE.
-        NMI->addOperand(MachineOperand::CreateReg(ARM::ITSTATE, false/*ifDef*/,
-                                               true/*isImp*/, false/*isKill*/));
-        LastITMI = NMI;
-      } else {
-        if (NCC == ARMCC::AL &&
-            MoveCopyOutOfITBlock(NMI, CC, OCC, Defs, Uses)) {
-          --MBBI;
-          MBB.remove(NMI);
-          MBB.insert(InsertPos, NMI);
-          ++NumMovedInsts;
+    // v8 IT blocks are limited to one conditional op unless -arm-no-restrict-it
+    // is set: skip the loop
+    if (!restrictIT) {
+      // Branches, including tricky ones like LDM_RET, need to end an IT
+      // block so check the instruction we just put in the block.
+      for (; MBBI != E && Pos &&
+             (!MI->isBranch() && !MI->isReturn()) ; ++MBBI) {
+        if (MBBI->isDebugValue())
           continue;
+
+        MachineInstr *NMI = &*MBBI;
+        MI = NMI;
+
+        unsigned NPredReg = 0;
+        ARMCC::CondCodes NCC = getITInstrPredicate(NMI, NPredReg);
+        if (NCC == CC || NCC == OCC) {
+          Mask |= (NCC & 1) << Pos;
+          // Add implicit use of ITSTATE.
+          NMI->addOperand(MachineOperand::CreateReg(ARM::ITSTATE, false/*ifDef*/,
+                                                 true/*isImp*/, false/*isKill*/));
+          LastITMI = NMI;
+        } else {
+          if (NCC == ARMCC::AL &&
+              MoveCopyOutOfITBlock(NMI, CC, OCC, Defs, Uses)) {
+            --MBBI;
+            MBB.remove(NMI);
+            MBB.insert(InsertPos, NMI);
+            ++NumMovedInsts;
+            continue;
+          }
+          break;
         }
-        break;
+        TrackDefUses(NMI, Defs, Uses, TRI);
+        --Pos;
       }
-      TrackDefUses(NMI, Defs, Uses, TRI);
-      --Pos;
     }
 
     // Finalize IT mask.
@@ -254,6 +256,7 @@ bool Thumb2ITBlockPass::runOnMachineFunction(MachineFunction &Fn) {
   AFI = Fn.getInfo<ARMFunctionInfo>();
   TII = static_cast<const Thumb2InstrInfo*>(TM.getInstrInfo());
   TRI = TM.getRegisterInfo();
+  restrictIT = TM.getSubtarget<ARMSubtarget>().restrictIT();
 
   if (!AFI->isThumbFunction())
     return false;

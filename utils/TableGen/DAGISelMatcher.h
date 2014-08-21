@@ -10,10 +10,10 @@
 #ifndef TBLGEN_DAGISELMATCHER_H
 #define TBLGEN_DAGISELMATCHER_H
 
-#include "llvm/CodeGen/ValueTypes.h"
 #include "llvm/ADT/OwningPtr.h"
-#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/CodeGen/ValueTypes.h"
 #include "llvm/Support/Casting.h"
 
 namespace llvm {
@@ -35,7 +35,7 @@ void EmitMatcherTable(const Matcher *Matcher, const CodeGenDAGPatterns &CGP,
                       raw_ostream &OS);
 
 
-/// Matcher - Base class for all the the DAG ISel Matcher representation
+/// Matcher - Base class for all the DAG ISel Matcher representation
 /// nodes.
 class Matcher {
   // The next matcher node that is executed after this one.  Null if this is the
@@ -55,6 +55,7 @@ public:
 
     // Predicate checking.
     CheckSame,            // Fail if not same as prev match.
+    CheckChildSame,       // Fail if child not same as prev match.
     CheckPatternPredicate,
     CheckPredicate,       // Fail if node predicate fails.
     CheckOpcode,          // Fail if not opcode.
@@ -99,8 +100,6 @@ public:
 
   OwningPtr<Matcher> &getNextPtr() { return Next; }
 
-  static inline bool classof(const Matcher *) { return true; }
-
   bool isEqual(const Matcher *M) const {
     if (getKind() != M->getKind()) return false;
     return isEqualImpl(M);
@@ -124,6 +123,7 @@ public:
     switch (getKind()) {
     default: return false;
     case CheckSame:
+    case CheckChildSame:
     case CheckPatternPredicate:
     case CheckPredicate:
     case CheckOpcode:
@@ -156,7 +156,7 @@ public:
   /// node.  Other must be equal to or before this.
   bool canMoveBefore(const Matcher *Other) const;
 
-  /// canMoveBefore - Return true if it is safe to move the current matcher
+  /// canMoveBeforeNode - Return true if it is safe to move the current matcher
   /// across the specified one.
   bool canMoveBeforeNode(const Matcher *Other) const;
 
@@ -392,6 +392,34 @@ private:
     return cast<CheckSameMatcher>(M)->getMatchNumber() == getMatchNumber();
   }
   virtual unsigned getHashImpl() const { return getMatchNumber(); }
+};
+
+/// CheckChildSameMatcher - This checks to see if child node is exactly the same
+/// node as the specified match that was recorded with 'Record'.  This is used
+/// when patterns have the same name in them, like '(mul GPR:$in, GPR:$in)'.
+class CheckChildSameMatcher : public Matcher {
+  unsigned ChildNo;
+  unsigned MatchNumber;
+public:
+  CheckChildSameMatcher(unsigned childno, unsigned matchnumber)
+    : Matcher(CheckChildSame), ChildNo(childno), MatchNumber(matchnumber) {}
+
+  unsigned getChildNo() const { return ChildNo; }
+  unsigned getMatchNumber() const { return MatchNumber; }
+
+  static inline bool classof(const Matcher *N) {
+    return N->getKind() == CheckChildSame;
+  }
+
+  virtual bool isSafeToReorderWithPatternPredicate() const { return true; }
+
+private:
+  virtual void printImpl(raw_ostream &OS, unsigned indent) const;
+  virtual bool isEqualImpl(const Matcher *M) const {
+    return cast<CheckChildSameMatcher>(M)->ChildNo == ChildNo &&
+           cast<CheckChildSameMatcher>(M)->MatchNumber == MatchNumber;
+  }
+  virtual unsigned getHashImpl() const { return (MatchNumber << 2) | ChildNo; }
 };
 
 /// CheckPatternPredicateMatcher - This checks the target-specific predicate

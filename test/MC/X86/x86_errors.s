@@ -18,7 +18,7 @@ addl $0, 0(%rax)
 
 movl 0(%rax), 0(%edx)  // error: invalid operand for instruction
 
-// 32: error: instruction requires a CPU feature not currently enabled
+// 32: error: instruction requires: 64-bit mode
 sysexitq
 
 // rdar://10710167
@@ -28,3 +28,6 @@ lea (%rsp, %rbp, $4), %rax
 // rdar://10423777
 // 64: error: index register is 32-bit, but base register is 64-bit
 movq (%rsi,%ecx),%xmm0
+
+// 32: error: invalid operand for instruction
+outb al, 4

@@ -19,8 +19,9 @@
 #include "llvm/Target/TargetFrameLowering.h"
 
 namespace llvm {
-  class MCSymbol;
-  class X86TargetMachine;
+
+class MCSymbol;
+class X86TargetMachine;
 
 class X86FrameLowering : public TargetFrameLowering {
   const X86TargetMachine &TM;
@@ -43,6 +44,8 @@ public:
 
   void adjustForSegmentedStacks(MachineFunction &MF) const;
 
+  void adjustForHiPEPrologue(MachineFunction &MF) const;
+
   void processFunctionBeforeCalleeSavedScan(MachineFunction &MF,
                                             RegScavenger *RS = NULL) const;
 
@@ -60,7 +63,12 @@ public:
   bool hasReservedCallFrame(const MachineFunction &MF) const;
 
   int getFrameIndexOffset(const MachineFunction &MF, int FI) const;
-  uint32_t getCompactUnwindEncoding(MachineFunction &MF) const;
+  int getFrameIndexReference(const MachineFunction &MF, int FI,
+                             unsigned &FrameReg) const;
+
+  void eliminateCallFramePseudoInstr(MachineFunction &MF,
+                                     MachineBasicBlock &MBB,
+                                     MachineBasicBlock::iterator MI) const;
 };
 
 } // End llvm namespace

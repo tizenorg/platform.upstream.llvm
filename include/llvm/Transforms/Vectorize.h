@@ -18,6 +18,7 @@
 namespace llvm {
 class BasicBlock;
 class BasicBlockPass;
+class Pass;
 
 //===----------------------------------------------------------------------===//
 /// @brief Vectorize configuration.
@@ -27,6 +28,9 @@ struct VectorizeConfig {
 
   /// @brief The size of the native vector registers.
   unsigned VectorBits;
+
+  /// @brief Vectorize boolean values.
+  bool VectorizeBools;
 
   /// @brief Vectorize integer values.
   bool VectorizeInts;
@@ -48,6 +52,9 @@ struct VectorizeConfig {
 
   /// @brief Vectorize select instructions.
   bool VectorizeSelect;
+
+  /// @brief Vectorize comparison instructions.
+  bool VectorizeCmp;
 
   /// @brief Vectorize getelementptr instructions.
   bool VectorizeGEP;
@@ -77,8 +84,14 @@ struct VectorizeConfig {
   /// @brief The maximum number of pairable instructions per group.
   unsigned MaxInsts;
 
+  /// @brief The maximum number of candidate instruction pairs per group.
+  unsigned MaxPairs;
+
   /// @brief The maximum number of pairing iterations.
   unsigned MaxIter;
+
+  /// @brief Don't try to form odd-length vectors.
+  bool Pow2LenOnly;
 
   /// @brief Don't boost the chain-depth contribution of loads and stores.
   bool NoMemOpBoost;
@@ -96,6 +109,18 @@ struct VectorizeConfig {
 //
 BasicBlockPass *
 createBBVectorizePass(const VectorizeConfig &C = VectorizeConfig());
+
+//===----------------------------------------------------------------------===//
+//
+// LoopVectorize - Create a loop vectorization pass.
+//
+Pass *createLoopVectorizePass(bool NoUnrolling = false);
+
+//===----------------------------------------------------------------------===//
+//
+// SLPVectorizer - Create a bottom-up SLP vectorizer pass.
+//
+Pass *createSLPVectorizerPass();
 
 //===----------------------------------------------------------------------===//
 /// @brief Vectorize the BasicBlock.

@@ -24,12 +24,10 @@ namespace llvm {
 
   FunctionPass *createMipsISelDag(MipsTargetMachine &TM);
   FunctionPass *createMipsDelaySlotFillerPass(MipsTargetMachine &TM);
-  FunctionPass *createMipsExpandPseudoPass(MipsTargetMachine &TM);
-  FunctionPass *createMipsEmitGPRestorePass(MipsTargetMachine &TM);
-
+  FunctionPass *createMipsLongBranchPass(MipsTargetMachine &TM);
   FunctionPass *createMipsJITCodeEmitterPass(MipsTargetMachine &TM,
                                              JITCodeEmitter &JCE);
-
+  FunctionPass *createMipsConstantIslandPass(MipsTargetMachine &tm);
 } // end namespace llvm;
 
 #endif

@@ -12,9 +12,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_GCOV_H
-#define LLVM_GCOV_H
+#ifndef LLVM_SUPPORT_GCOV_H
+#define LLVM_SUPPORT_GCOV_H
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -24,16 +25,17 @@ namespace llvm {
 
 class GCOVFunction;
 class GCOVBlock;
-class GCOVLines;
 class FileInfo;
 
-enum GCOVFormat {
-  InvalidGCOV,
-  GCNO_402,
-  GCNO_404,
-  GCDA_402,
-  GCDA_404
-};
+namespace GCOV {
+  enum GCOVFormat {
+    InvalidGCOV,
+    GCNO_402,
+    GCNO_404,
+    GCDA_402,
+    GCDA_404
+  };
+} // end GCOV namespace
 
 /// GCOVBuffer - A wrapper around MemoryBuffer to provide GCOV specific
 /// read operations.
@@ -42,20 +44,20 @@ public:
   GCOVBuffer(MemoryBuffer *B) : Buffer(B), Cursor(0) {}
   
   /// readGCOVFormat - Read GCOV signature at the beginning of buffer.
-  enum GCOVFormat readGCOVFormat() {
+  GCOV::GCOVFormat readGCOVFormat() {
     StringRef Magic = Buffer->getBuffer().slice(0, 12);
     Cursor = 12;
     if (Magic == "oncg*404MVLL")
-      return GCNO_404;
+      return GCOV::GCNO_404;
     else if (Magic == "oncg*204MVLL")
-      return GCNO_402;
+      return GCOV::GCNO_402;
     else if (Magic == "adcg*404MVLL")
-      return GCDA_404;
+      return GCOV::GCDA_404;
     else if (Magic == "adcg*204MVLL")
-      return GCDA_402;
+      return GCOV::GCDA_402;
     
     Cursor = 0;
-    return InvalidGCOV;
+    return GCOV::InvalidGCOV;
   }
 
   /// readFunctionTag - If cursor points to a function tag then increment the
@@ -63,8 +65,8 @@ public:
   bool readFunctionTag() {
     StringRef Tag = Buffer->getBuffer().slice(Cursor, Cursor+4);
     if (Tag.empty() || 
-	Tag[0] != '\0' || Tag[1] != '\0' ||
-	Tag[2] != '\0' || Tag[3] != '\1') {
+        Tag[0] != '\0' || Tag[1] != '\0' ||
+        Tag[2] != '\0' || Tag[3] != '\1') {
       return false;
     }
     Cursor += 4;
@@ -76,8 +78,8 @@ public:
   bool readBlockTag() {
     StringRef Tag = Buffer->getBuffer().slice(Cursor, Cursor+4);
     if (Tag.empty() || 
-	Tag[0] != '\0' || Tag[1] != '\0' ||
-	Tag[2] != '\x41' || Tag[3] != '\x01') {
+        Tag[0] != '\0' || Tag[1] != '\0' ||
+        Tag[2] != '\x41' || Tag[3] != '\x01') {
       return false;
     }
     Cursor += 4;
@@ -89,8 +91,8 @@ public:
   bool readEdgeTag() {
     StringRef Tag = Buffer->getBuffer().slice(Cursor, Cursor+4);
     if (Tag.empty() || 
-	Tag[0] != '\0' || Tag[1] != '\0' ||
-	Tag[2] != '\x43' || Tag[3] != '\x01') {
+        Tag[0] != '\0' || Tag[1] != '\0' ||
+        Tag[2] != '\x43' || Tag[3] != '\x01') {
       return false;
     }
     Cursor += 4;
@@ -102,8 +104,8 @@ public:
   bool readLineTag() {
     StringRef Tag = Buffer->getBuffer().slice(Cursor, Cursor+4);
     if (Tag.empty() || 
-	Tag[0] != '\0' || Tag[1] != '\0' ||
-	Tag[2] != '\x45' || Tag[3] != '\x01') {
+        Tag[0] != '\0' || Tag[1] != '\0' ||
+        Tag[2] != '\x45' || Tag[3] != '\x01') {
       return false;
     }
     Cursor += 4;
@@ -115,38 +117,73 @@ public:
   bool readArcTag() {
     StringRef Tag = Buffer->getBuffer().slice(Cursor, Cursor+4);
     if (Tag.empty() || 
-	Tag[0] != '\0' || Tag[1] != '\0' ||
-	Tag[2] != '\xa1' || Tag[3] != '\1') {
+        Tag[0] != '\0' || Tag[1] != '\0' ||
+        Tag[2] != '\xa1' || Tag[3] != '\1') {
       return false;
     }
     Cursor += 4;
     return true;
   }
 
-  uint32_t readInt() {
-    uint32_t Result;
-    StringRef Str = Buffer->getBuffer().slice(Cursor, Cursor+4);
-    assert (Str.empty() == false && "Unexpected memory buffer end!");
+  /// readObjectTag - If cursor points to an object summary tag then increment
+  /// the cursor and return true otherwise return false.
+  bool readObjectTag() {
+    StringRef Tag = Buffer->getBuffer().slice(Cursor, Cursor+4);
+    if (Tag.empty() ||
+        Tag[0] != '\0' || Tag[1] != '\0' ||
+        Tag[2] != '\0' || Tag[3] != '\xa1') {
+      return false;
+    }
     Cursor += 4;
-    Result = *(uint32_t *)(Str.data());
-    return Result;
+    return true;
   }
 
-  uint64_t readInt64() {
-    uint64_t Lo = readInt();
-    uint64_t Hi = readInt();
-    uint64_t Result = Lo | (Hi << 32);
-    return Result;
+  /// readProgramTag - If cursor points to a program summary tag then increment
+  /// the cursor and return true otherwise return false.
+  bool readProgramTag() {
+    StringRef Tag = Buffer->getBuffer().slice(Cursor, Cursor+4);
+    if (Tag.empty() ||
+        Tag[0] != '\0' || Tag[1] != '\0' ||
+        Tag[2] != '\0' || Tag[3] != '\xa3') {
+      return false;
+    }
+    Cursor += 4;
+    return true;
   }
 
-  StringRef readString() {
-    uint32_t Len = readInt() * 4;
-    StringRef Str = Buffer->getBuffer().slice(Cursor, Cursor+Len);
+  bool readInt(uint32_t &Val) {
+    if (Buffer->getBuffer().size() < Cursor+4) {
+      errs() << "Unexpected end of memory buffer: " << Cursor+4 << ".\n";
+      return false;
+    }
+    StringRef Str = Buffer->getBuffer().slice(Cursor, Cursor+4);
+    Cursor += 4;
+    Val = *(const uint32_t *)(Str.data());
+    return true;
+  }
+
+  bool readInt64(uint64_t &Val) {
+    uint32_t Lo, Hi;
+    if (!readInt(Lo) || !readInt(Hi)) return false;
+    Val = ((uint64_t)Hi << 32) | Lo;
+    return true;
+  }
+
+  bool readString(StringRef &Str) {
+    uint32_t Len;
+    if (!readInt(Len)) return false;
+    Len *= 4;
+    if (Buffer->getBuffer().size() < Cursor+Len) {
+      errs() << "Unexpected end of memory buffer: " << Cursor+Len << ".\n";
+      return false;
+    }
+    Str = Buffer->getBuffer().slice(Cursor, Cursor+Len).split('\0').first;
     Cursor += Len;
-    return Str;
+    return true;
   }
 
   uint64_t getCursor() const { return Cursor; }
+  void advanceCursor(uint32_t n) { Cursor += n*4; }
 private:
   MemoryBuffer *Buffer;
   uint64_t Cursor;
@@ -156,13 +193,15 @@ private:
 /// (.gcno and .gcda).
 class GCOVFile {
 public:
-  GCOVFile() {}
+  GCOVFile() : Functions(), RunCount(0), ProgramCount(0) {}
   ~GCOVFile();
   bool read(GCOVBuffer &Buffer);
   void dump();
   void collectLineCounts(FileInfo &FI);
 private:
   SmallVector<GCOVFunction *, 16> Functions;
+  uint32_t RunCount;
+  uint32_t ProgramCount;
 };
 
 /// GCOVFunction - Collects function information.
@@ -170,7 +209,8 @@ class GCOVFunction {
 public:
   GCOVFunction() : Ident(0), LineNumber(0) {}
   ~GCOVFunction();
-  bool read(GCOVBuffer &Buffer, GCOVFormat Format);
+  bool read(GCOVBuffer &Buffer, GCOV::GCOVFormat Format);
+  StringRef getFilename() const { return Filename; }
   void dump();
   void collectLineCounts(FileInfo &FI);
 private:
@@ -184,39 +224,36 @@ private:
 /// GCOVBlock - Collects block information.
 class GCOVBlock {
 public:
-  GCOVBlock(uint32_t N) : Number(N), Counter(0) {}
+  GCOVBlock(GCOVFunction &P, uint32_t N) :
+    Parent(P), Number(N), Counter(0), Edges(), Lines() {}
   ~GCOVBlock();
   void addEdge(uint32_t N) { Edges.push_back(N); }
-  void addLine(StringRef Filename, uint32_t LineNo);
-  void addCount(uint64_t N) { Counter = N; }
+  void addLine(uint32_t N) { Lines.push_back(N); }
+  void addCount(uint64_t N) { Counter += N; }
+  size_t getNumEdges() { return Edges.size(); }
   void dump();
   void collectLineCounts(FileInfo &FI);
 private:
+  GCOVFunction &Parent;
   uint32_t Number;
   uint64_t Counter;
   SmallVector<uint32_t, 16> Edges;
-  StringMap<GCOVLines *> Lines;
+  SmallVector<uint32_t, 16> Lines;
 };
 
-/// GCOVLines - A wrapper around a vector of int to keep track of line nos.
-class GCOVLines {
-public:
-  ~GCOVLines() { Lines.clear(); }
-  void add(uint32_t N) { Lines.push_back(N); }
-  void collectLineCounts(FileInfo &FI, StringRef Filename, uint32_t Count);
-  void dump();
-
-private:
-  SmallVector<uint32_t, 4> Lines;
-};
-
-typedef SmallVector<uint32_t, 16> LineCounts;
+typedef DenseMap<uint32_t, uint64_t> LineCounts;
 class FileInfo {
 public:
-  void addLineCount(StringRef Filename, uint32_t Line, uint32_t Count);
-  void print();
+  void addLineCount(StringRef Filename, uint32_t Line, uint64_t Count) {
+    LineInfo[Filename][Line-1] += Count;
+  }
+  void setRunCount(uint32_t Runs) { RunCount = Runs; }
+  void setProgramCount(uint32_t Programs) { ProgramCount = Programs; }
+  void print(raw_fd_ostream &OS, StringRef gcnoFile, StringRef gcdaFile);
 private:
   StringMap<LineCounts> LineInfo;
+  uint32_t RunCount;
+  uint32_t ProgramCount;
 };
 
 }

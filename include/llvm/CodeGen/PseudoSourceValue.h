@@ -14,7 +14,7 @@
 #ifndef LLVM_CODEGEN_PSEUDOSOURCEVALUE_H
 #define LLVM_CODEGEN_PSEUDOSOURCEVALUE_H
 
-#include "llvm/Value.h"
+#include "llvm/IR/Value.h"
 
 namespace llvm {
   class MachineFrameInfo;
@@ -44,13 +44,12 @@ namespace llvm {
     virtual bool isAliased(const MachineFrameInfo *) const;
 
     /// mayAlias - Return true if the memory pointed to by this
-    /// PseudoSourceValue can ever alias a LLVM IR Value.
+    /// PseudoSourceValue can ever alias an LLVM IR Value.
     virtual bool mayAlias(const MachineFrameInfo *) const;
 
     /// classof - Methods for support type inquiry through isa, cast, and
     /// dyn_cast:
     ///
-    static inline bool classof(const PseudoSourceValue *) { return true; }
     static inline bool classof(const Value *V) {
       return V->getValueID() == PseudoSourceValueVal ||
              V->getValueID() == FixedStackPseudoSourceValueVal;
@@ -90,9 +89,6 @@ namespace llvm {
     /// classof - Methods for support type inquiry through isa, cast, and
     /// dyn_cast:
     ///
-    static inline bool classof(const FixedStackPseudoSourceValue *) {
-      return true;
-    }
     static inline bool classof(const Value *V) {
       return V->getValueID() == FixedStackPseudoSourceValueVal;
     }

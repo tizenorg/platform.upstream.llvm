@@ -15,8 +15,8 @@
 #ifndef HexagonREGISTERINFO_H
 #define HexagonREGISTERINFO_H
 
-#include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/MC/MachineLocation.h"
+#include "llvm/Target/TargetRegisterInfo.h"
 
 #define GET_REGINFO_HEADER
 #include "HexagonGenRegisterInfo.inc"
@@ -44,9 +44,8 @@ class Type;
 
 struct HexagonRegisterInfo : public HexagonGenRegisterInfo {
   HexagonSubtarget &Subtarget;
-  const HexagonInstrInfo &TII;
 
-  HexagonRegisterInfo(HexagonSubtarget &st, const HexagonInstrInfo &tii);
+  HexagonRegisterInfo(HexagonSubtarget &st);
 
   /// Code Generation virtual methods...
   const uint16_t *getCalleeSavedRegs(const MachineFunction *MF = 0) const;
@@ -56,12 +55,9 @@ struct HexagonRegisterInfo : public HexagonGenRegisterInfo {
 
   BitVector getReservedRegs(const MachineFunction &MF) const;
 
-  void eliminateCallFramePseudoInstr(MachineFunction &MF,
-                                     MachineBasicBlock &MBB,
-                                     MachineBasicBlock::iterator I) const;
-
   void eliminateFrameIndex(MachineBasicBlock::iterator II,
-                           int SPAdj, RegScavenger *RS = NULL) const;
+                           int SPAdj, unsigned FIOperandNum,
+                           RegScavenger *RS = NULL) const;
 
   /// determineFrameLayout - Determine the size of the frame and maximum call
   /// frame size.
@@ -73,16 +69,15 @@ struct HexagonRegisterInfo : public HexagonGenRegisterInfo {
     return true;
   }
 
+  bool trackLivenessAfterRegAlloc(const MachineFunction &MF) const {
+    return true;
+  }
+
   // Debug information queries.
   unsigned getRARegister() const;
   unsigned getFrameRegister(const MachineFunction &MF) const;
   unsigned getFrameRegister() const;
-  void getInitialFrameState(std::vector<MachineMove> &Moves) const;
   unsigned getStackRegister() const;
-
-  // Exception handling queries.
-  unsigned getEHExceptionRegister() const;
-  unsigned getEHHandlerRegister() const;
 };
 
 } // end namespace llvm

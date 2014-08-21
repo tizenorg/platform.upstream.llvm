@@ -1,11 +1,12 @@
-#include "llvm/DerivedTypes.h"
-#include "llvm/LLVMContext.h"
-#include "llvm/Module.h"
 #include "llvm/Analysis/Verifier.h"
-#include "llvm/Support/IRBuilder.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include <cctype>
 #include <cstdio>
-#include <string>
 #include <map>
+#include <string>
 #include <vector>
 using namespace llvm;
 
@@ -79,7 +80,7 @@ static int gettok() {
 //===----------------------------------------------------------------------===//
 // Abstract Syntax Tree (aka Parse Tree)
 //===----------------------------------------------------------------------===//
-
+namespace {
 /// ExprAST - Base class for all expression nodes.
 class ExprAST {
 public:
@@ -146,6 +147,7 @@ public:
   
   Function *Codegen();
 };
+} // end anonymous namespace
 
 //===----------------------------------------------------------------------===//
 // Parser

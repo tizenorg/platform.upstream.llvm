@@ -12,19 +12,20 @@
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "mccodeemitter"
+#include "MCTargetDesc/ARMMCTargetDesc.h"
 #include "MCTargetDesc/ARMAddressingModes.h"
 #include "MCTargetDesc/ARMBaseInfo.h"
 #include "MCTargetDesc/ARMFixupKinds.h"
 #include "MCTargetDesc/ARMMCExpr.h"
-#include "MCTargetDesc/ARMMCTargetDesc.h"
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/MC/MCCodeEmitter.h"
+#include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
-#include "llvm/ADT/APFloat.h"
-#include "llvm/ADT/Statistic.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
@@ -34,15 +35,16 @@ STATISTIC(MCNumCPRelocations, "Number of constant pool relocations created.");
 
 namespace {
 class ARMMCCodeEmitter : public MCCodeEmitter {
-  ARMMCCodeEmitter(const ARMMCCodeEmitter &); // DO NOT IMPLEMENT
-  void operator=(const ARMMCCodeEmitter &); // DO NOT IMPLEMENT
+  ARMMCCodeEmitter(const ARMMCCodeEmitter &) LLVM_DELETED_FUNCTION;
+  void operator=(const ARMMCCodeEmitter &) LLVM_DELETED_FUNCTION;
   const MCInstrInfo &MCII;
   const MCSubtargetInfo &STI;
+  const MCContext &CTX;
 
 public:
   ARMMCCodeEmitter(const MCInstrInfo &mcii, const MCSubtargetInfo &sti,
                    MCContext &ctx)
-    : MCII(mcii), STI(sti) {
+    : MCII(mcii), STI(sti), CTX(ctx) {
   }
 
   ~ARMMCCodeEmitter() {}
@@ -56,8 +58,7 @@ public:
   }
   bool isTargetDarwin() const {
     Triple TT(STI.getTargetTriple());
-    Triple::OSType OS = TT.getOS();
-    return OS == Triple::Darwin || OS == Triple::MacOSX || OS == Triple::IOS;
+  	return TT.isOSDarwin();
   }
 
   unsigned getMachineSoImmOpValue(unsigned SoImm) const;
@@ -313,6 +314,8 @@ public:
                                           unsigned EncodedValue) const;
   unsigned NEONThumb2DupPostEncoder(const MCInst &MI,
                                     unsigned EncodedValue) const;
+  unsigned NEONThumb2V8PostEncoder(const MCInst &MI,
+                                   unsigned EncodedValue) const;
 
   unsigned VFPThumb2PostEncoder(const MCInst &MI,
                                 unsigned EncodedValue) const;
@@ -336,6 +339,7 @@ public:
 } // end anonymous namespace
 
 MCCodeEmitter *llvm::createARMMCCodeEmitter(const MCInstrInfo &MCII,
+                                            const MCRegisterInfo &MRI,
                                             const MCSubtargetInfo &STI,
                                             MCContext &Ctx) {
   return new ARMMCCodeEmitter(MCII, STI, Ctx);
@@ -386,6 +390,17 @@ unsigned ARMMCCodeEmitter::NEONThumb2DupPostEncoder(const MCInst &MI,
   return EncodedValue;
 }
 
+/// Post-process encoded NEON v8 instructions, and rewrite them to Thumb2 form
+/// if we are in Thumb2.
+unsigned ARMMCCodeEmitter::NEONThumb2V8PostEncoder(const MCInst &MI,
+                                                 unsigned EncodedValue) const {
+  if (isThumb2()) {
+    EncodedValue |= 0xC000000; // Set bits 27-26
+  }
+
+  return EncodedValue;
+}
+
 /// VFPThumb2PostEncoder - Post-process encoded VFP instructions and rewrite
 /// them to their Thumb2 form if we are currently in Thumb2 mode.
 unsigned ARMMCCodeEmitter::
@@ -404,7 +419,7 @@ getMachineOpValue(const MCInst &MI, const MCOperand &MO,
                   SmallVectorImpl<MCFixup> &Fixups) const {
   if (MO.isReg()) {
     unsigned Reg = MO.getReg();
-    unsigned RegNo = getARMRegisterNumbering(Reg);
+    unsigned RegNo = CTX.getRegisterInfo()->getEncodingValue(Reg);
 
     // Q registers are encoded as 2x their register number.
     switch (Reg) {
@@ -433,7 +448,7 @@ EncodeAddrModeOpValues(const MCInst &MI, unsigned OpIdx, unsigned &Reg,
   const MCOperand &MO  = MI.getOperand(OpIdx);
   const MCOperand &MO1 = MI.getOperand(OpIdx + 1);
 
-  Reg = getARMRegisterNumbering(MO.getReg());
+  Reg = CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
 
   int32_t SImm = MO1.getImm();
   bool isAdd = true;
@@ -622,8 +637,14 @@ getARMBLXTargetOpValue(const MCInst &MI, unsigned OpIdx,
 uint32_t ARMMCCodeEmitter::
 getUnconditionalBranchTargetOpValue(const MCInst &MI, unsigned OpIdx,
                        SmallVectorImpl<MCFixup> &Fixups) const {
-  unsigned Val =
-    ::getBranchTargetOpValue(MI, OpIdx, ARM::fixup_t2_uncondbranch, Fixups);
+  unsigned Val = 0;
+  const MCOperand MO = MI.getOperand(OpIdx);
+    
+  if(MO.isExpr())
+    return ::getBranchTargetOpValue(MI, OpIdx, ARM::fixup_t2_uncondbranch, Fixups);
+  else 
+    Val = MO.getImm() >> 1;
+
   bool I  = (Val & 0x800000);
   bool J1 = (Val & 0x400000);
   bool J2 = (Val & 0x200000);
@@ -640,8 +661,8 @@ getUnconditionalBranchTargetOpValue(const MCInst &MI, unsigned OpIdx,
   return Val;
 }
 
-/// getAdrLabelOpValue - Return encoding info for 12-bit immediate ADR label
-/// target.
+/// getAdrLabelOpValue - Return encoding info for 12-bit shifted-immediate
+/// ADR label target.
 uint32_t ARMMCCodeEmitter::
 getAdrLabelOpValue(const MCInst &MI, unsigned OpIdx,
                    SmallVectorImpl<MCFixup> &Fixups) const {
@@ -649,17 +670,38 @@ getAdrLabelOpValue(const MCInst &MI, unsigned OpIdx,
   if (MO.isExpr())
     return ::getBranchTargetOpValue(MI, OpIdx, ARM::fixup_arm_adr_pcrel_12,
                                     Fixups);
-  int32_t offset = MO.getImm();
+  int64_t offset = MO.getImm();
   uint32_t Val = 0x2000;
-  if (offset < 0) {
+
+  int SoImmVal;
+  if (offset == INT32_MIN) {
+    Val = 0x1000;
+    SoImmVal = 0;
+  } else if (offset < 0) {
     Val = 0x1000;
     offset *= -1;
+    SoImmVal = ARM_AM::getSOImmVal(offset);
+    if(SoImmVal == -1) {
+      Val = 0x2000;
+      offset *= -1;
+      SoImmVal = ARM_AM::getSOImmVal(offset);
+    }
+  } else {
+    SoImmVal = ARM_AM::getSOImmVal(offset);
+    if(SoImmVal == -1) {
+      Val = 0x1000;
+      offset *= -1;
+      SoImmVal = ARM_AM::getSOImmVal(offset);
+    }
   }
-  Val |= offset;
+
+  assert(SoImmVal != -1 && "Not a valid so_imm value!");
+
+  Val |= SoImmVal;
   return Val;
 }
 
-/// getAdrLabelOpValue - Return encoding info for 12-bit immediate ADR label
+/// getT2AdrLabelOpValue - Return encoding info for 12-bit immediate ADR label
 /// target.
 uint32_t ARMMCCodeEmitter::
 getT2AdrLabelOpValue(const MCInst &MI, unsigned OpIdx,
@@ -669,14 +711,16 @@ getT2AdrLabelOpValue(const MCInst &MI, unsigned OpIdx,
     return ::getBranchTargetOpValue(MI, OpIdx, ARM::fixup_t2_adr_pcrel_12,
                                     Fixups);
   int32_t Val = MO.getImm();
-  if (Val < 0) {
+  if (Val == INT32_MIN)
+    Val = 0x1000;
+  else if (Val < 0) {
     Val *= -1;
     Val |= 0x1000;
   }
   return Val;
 }
 
-/// getAdrLabelOpValue - Return encoding info for 8-bit immediate ADR label
+/// getThumbAdrLabelOpValue - Return encoding info for 8-bit immediate ADR label
 /// target.
 uint32_t ARMMCCodeEmitter::
 getThumbAdrLabelOpValue(const MCInst &MI, unsigned OpIdx,
@@ -698,8 +742,8 @@ getThumbAddrModeRegRegOpValue(const MCInst &MI, unsigned OpIdx,
   //   {2-0} = Rn
   const MCOperand &MO1 = MI.getOperand(OpIdx);
   const MCOperand &MO2 = MI.getOperand(OpIdx + 1);
-  unsigned Rn = getARMRegisterNumbering(MO1.getReg());
-  unsigned Rm = getARMRegisterNumbering(MO2.getReg());
+  unsigned Rn = CTX.getRegisterInfo()->getEncodingValue(MO1.getReg());
+  unsigned Rm = CTX.getRegisterInfo()->getEncodingValue(MO2.getReg());
   return (Rm << 3) | Rn;
 }
 
@@ -715,12 +759,12 @@ getAddrModeImm12OpValue(const MCInst &MI, unsigned OpIdx,
   // If The first operand isn't a register, we have a label reference.
   const MCOperand &MO = MI.getOperand(OpIdx);
   if (!MO.isReg()) {
-    Reg = getARMRegisterNumbering(ARM::PC);   // Rn is PC.
+    Reg = CTX.getRegisterInfo()->getEncodingValue(ARM::PC);   // Rn is PC.
     Imm12 = 0;
-    isAdd = false ; // 'U' bit is set as part of the fixup.
 
     if (MO.isExpr()) {
       const MCExpr *Expr = MO.getExpr();
+      isAdd = false ; // 'U' bit is set as part of the fixup.
 
       MCFixupKind Kind;
       if (isThumb2())
@@ -733,8 +777,10 @@ getAddrModeImm12OpValue(const MCInst &MI, unsigned OpIdx,
     } else {
       Reg = ARM::PC;
       int32_t Offset = MO.getImm();
-      // FIXME: Handle #-0.
-      if (Offset < 0) {
+      if (Offset == INT32_MIN) {
+        Offset = 0;
+        isAdd = false;
+      } else if (Offset < 0) {
         Offset *= -1;
         isAdd = false;
       }
@@ -770,7 +816,7 @@ getT2Imm8s4OpValue(const MCInst &MI, unsigned OpIdx,
 
   // Immediate is always encoded as positive. The 'U' bit controls add vs sub.
   if (Imm8 < 0)
-    Imm8 = -Imm8;
+    Imm8 = -(uint32_t)Imm8;
 
   // Scaled by 4.
   Imm8 /= 4;
@@ -795,7 +841,7 @@ getT2AddrModeImm8s4OpValue(const MCInst &MI, unsigned OpIdx,
   // If The first operand isn't a register, we have a label reference.
   const MCOperand &MO = MI.getOperand(OpIdx);
   if (!MO.isReg()) {
-    Reg = getARMRegisterNumbering(ARM::PC);   // Rn is PC.
+    Reg = CTX.getRegisterInfo()->getEncodingValue(ARM::PC);   // Rn is PC.
     Imm8 = 0;
     isAdd = false ; // 'U' bit is set as part of the fixup.
 
@@ -831,7 +877,7 @@ getT2AddrModeImm0_1020s4OpValue(const MCInst &MI, unsigned OpIdx,
   // {7-0}  = imm8
   const MCOperand &MO = MI.getOperand(OpIdx);
   const MCOperand &MO1 = MI.getOperand(OpIdx + 1);
-  unsigned Reg = getARMRegisterNumbering(MO.getReg());
+  unsigned Reg = CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
   unsigned Imm8 = MO1.getImm();
   return (Reg << 8) | Imm8;
 }
@@ -861,11 +907,11 @@ ARMMCCodeEmitter::getHiLo16ImmOpValue(const MCInst &MI, unsigned OpIdx,
 
   // Handle :upper16: and :lower16: assembly prefixes.
   const MCExpr *E = MO.getExpr();
+  MCFixupKind Kind;
   if (E->getKind() == MCExpr::Target) {
     const ARMMCExpr *ARM16Expr = cast<ARMMCExpr>(E);
     E = ARM16Expr->getSubExpr();
 
-    MCFixupKind Kind;
     switch (ARM16Expr->getKind()) {
     default: llvm_unreachable("Unsupported ARMFixup");
     case ARMMCExpr::VK_ARM_HI16:
@@ -891,9 +937,21 @@ ARMMCCodeEmitter::getHiLo16ImmOpValue(const MCInst &MI, unsigned OpIdx,
     }
     Fixups.push_back(MCFixup::Create(0, E, Kind, MI.getLoc()));
     return 0;
-  };
-
-  llvm_unreachable("Unsupported MCExpr type in MCOperand!");
+  }
+  // If the expression doesn't have :upper16: or :lower16: on it,
+  // it's just a plain immediate expression, and those evaluate to
+  // the lower 16 bits of the expression regardless of whether
+  // we have a movt or a movw.
+  if (!isTargetDarwin() && EvaluateAsPCRel(E))
+    Kind = MCFixupKind(isThumb2()
+                       ? ARM::fixup_t2_movw_lo16_pcrel
+                       : ARM::fixup_arm_movw_lo16_pcrel);
+  else
+    Kind = MCFixupKind(isThumb2()
+                       ? ARM::fixup_t2_movw_lo16
+                       : ARM::fixup_arm_movw_lo16);
+  Fixups.push_back(MCFixup::Create(0, E, Kind, MI.getLoc()));
+  return 0;
 }
 
 uint32_t ARMMCCodeEmitter::
@@ -902,12 +960,16 @@ getLdStSORegOpValue(const MCInst &MI, unsigned OpIdx,
   const MCOperand &MO = MI.getOperand(OpIdx);
   const MCOperand &MO1 = MI.getOperand(OpIdx+1);
   const MCOperand &MO2 = MI.getOperand(OpIdx+2);
-  unsigned Rn = getARMRegisterNumbering(MO.getReg());
-  unsigned Rm = getARMRegisterNumbering(MO1.getReg());
+  unsigned Rn = CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
+  unsigned Rm = CTX.getRegisterInfo()->getEncodingValue(MO1.getReg());
   unsigned ShImm = ARM_AM::getAM2Offset(MO2.getImm());
   bool isAdd = ARM_AM::getAM2Op(MO2.getImm()) == ARM_AM::add;
   ARM_AM::ShiftOpc ShOp = ARM_AM::getAM2ShiftOpc(MO2.getImm());
   unsigned SBits = getShiftOp(ShOp);
+
+  // While "lsr #32" and "asr #32" exist, they are encoded with a 0 in the shift
+  // amount. However, it would be an easy mistake to make so check here.
+  assert((ShImm & ~0x1f) == 0 && "Out of range shift amount");
 
   // {16-13} = Rn
   // {12}    = isAdd
@@ -933,7 +995,7 @@ getAddrMode2OpValue(const MCInst &MI, unsigned OpIdx,
   // {12}     isAdd
   // {11-0}   imm12/Rm
   const MCOperand &MO = MI.getOperand(OpIdx);
-  unsigned Rn = getARMRegisterNumbering(MO.getReg());
+  unsigned Rn = CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
   uint32_t Binary = getAddrMode2OffsetOpValue(MI, OpIdx + 1, Fixups);
   Binary |= Rn << 14;
   return Binary;
@@ -956,7 +1018,7 @@ getAddrMode2OffsetOpValue(const MCInst &MI, unsigned OpIdx,
     ARM_AM::ShiftOpc ShOp = ARM_AM::getAM2ShiftOpc(Imm);
     Binary <<= 7;                    // Shift amount is bits [11:7]
     Binary |= getShiftOp(ShOp) << 5; // Shift type is bits [6:5]
-    Binary |= getARMRegisterNumbering(MO.getReg()); // Rm is bits [3:0]
+    Binary |= CTX.getRegisterInfo()->getEncodingValue(MO.getReg()); // Rm is bits [3:0]
   }
   return Binary | (isAdd << 12) | (isReg << 13);
 }
@@ -969,7 +1031,7 @@ getPostIdxRegOpValue(const MCInst &MI, unsigned OpIdx,
   const MCOperand &MO = MI.getOperand(OpIdx);
   const MCOperand &MO1 = MI.getOperand(OpIdx+1);
   bool isAdd = MO1.getImm() != 0;
-  return getARMRegisterNumbering(MO.getReg()) | (isAdd << 4);
+  return CTX.getRegisterInfo()->getEncodingValue(MO.getReg()) | (isAdd << 4);
 }
 
 uint32_t ARMMCCodeEmitter::
@@ -987,7 +1049,7 @@ getAddrMode3OffsetOpValue(const MCInst &MI, unsigned OpIdx,
   uint32_t Imm8 = ARM_AM::getAM3Offset(Imm);
   // if reg +/- reg, Rm will be non-zero. Otherwise, we have reg +/- imm8
   if (!isImm)
-    Imm8 = getARMRegisterNumbering(MO.getReg());
+    Imm8 = CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
   return Imm8 | (isAdd << 8) | (isImm << 9);
 }
 
@@ -1005,7 +1067,7 @@ getAddrMode3OpValue(const MCInst &MI, unsigned OpIdx,
 
   // If The first operand isn't a register, we have a label reference.
   if (!MO.isReg()) {
-    unsigned Rn = getARMRegisterNumbering(ARM::PC);   // Rn is PC.
+    unsigned Rn = CTX.getRegisterInfo()->getEncodingValue(ARM::PC);   // Rn is PC.
 
     assert(MO.isExpr() && "Unexpected machine operand type!");
     const MCExpr *Expr = MO.getExpr();
@@ -1015,14 +1077,14 @@ getAddrMode3OpValue(const MCInst &MI, unsigned OpIdx,
     ++MCNumCPRelocations;
     return (Rn << 9) | (1 << 13);
   }
-  unsigned Rn = getARMRegisterNumbering(MO.getReg());
+  unsigned Rn = CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
   unsigned Imm = MO2.getImm();
   bool isAdd = ARM_AM::getAM3Op(Imm) == ARM_AM::add;
   bool isImm = MO1.getReg() == 0;
   uint32_t Imm8 = ARM_AM::getAM3Offset(Imm);
   // if reg +/- reg, Rm will be non-zero. Otherwise, we have reg +/- imm8
   if (!isImm)
-    Imm8 = getARMRegisterNumbering(MO1.getReg());
+    Imm8 = CTX.getRegisterInfo()->getEncodingValue(MO1.getReg());
   return (Rn << 9) | Imm8 | (isAdd << 8) | (isImm << 13);
 }
 
@@ -1050,7 +1112,7 @@ getAddrModeISOpValue(const MCInst &MI, unsigned OpIdx,
   //   {2-0} = Rn
   const MCOperand &MO = MI.getOperand(OpIdx);
   const MCOperand &MO1 = MI.getOperand(OpIdx + 1);
-  unsigned Rn = getARMRegisterNumbering(MO.getReg());
+  unsigned Rn = CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
   unsigned Imm5 = MO1.getImm();
   return ((Imm5 & 0x1f) << 3) | Rn;
 }
@@ -1077,7 +1139,7 @@ getAddrMode5OpValue(const MCInst &MI, unsigned OpIdx,
   // If The first operand isn't a register, we have a label reference.
   const MCOperand &MO = MI.getOperand(OpIdx);
   if (!MO.isReg()) {
-    Reg = getARMRegisterNumbering(ARM::PC);   // Rn is PC.
+    Reg = CTX.getRegisterInfo()->getEncodingValue(ARM::PC);   // Rn is PC.
     Imm8 = 0;
     isAdd = false; // 'U' bit is handled as part of the fixup.
 
@@ -1123,7 +1185,7 @@ getSORegRegOpValue(const MCInst &MI, unsigned OpIdx,
   ARM_AM::ShiftOpc SOpc = ARM_AM::getSORegShOp(MO2.getImm());
 
   // Encode Rm.
-  unsigned Binary = getARMRegisterNumbering(MO.getReg());
+  unsigned Binary = CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
 
   // Encode the shift opcode.
   unsigned SBits = 0;
@@ -1148,7 +1210,7 @@ getSORegRegOpValue(const MCInst &MI, unsigned OpIdx,
   // Encode the shift operation Rs.
   // Encode Rs bit[11:8].
   assert(ARM_AM::getSORegOffset(MO2.getImm()) == 0);
-  return Binary | (getARMRegisterNumbering(Rs) << ARMII::RegRsShift);
+  return Binary | (CTX.getRegisterInfo()->getEncodingValue(Rs) << ARMII::RegRsShift);
 }
 
 unsigned ARMMCCodeEmitter::
@@ -1167,7 +1229,7 @@ getSORegImmOpValue(const MCInst &MI, unsigned OpIdx,
   ARM_AM::ShiftOpc SOpc = ARM_AM::getSORegShOp(MO1.getImm());
 
   // Encode Rm.
-  unsigned Binary = getARMRegisterNumbering(MO.getReg());
+  unsigned Binary = CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
 
   // Encode the shift opcode.
   unsigned SBits = 0;
@@ -1192,8 +1254,7 @@ getSORegImmOpValue(const MCInst &MI, unsigned OpIdx,
   // Encode shift_imm bit[11:7].
   Binary |= SBits << 4;
   unsigned Offset = ARM_AM::getSORegOffset(MO1.getImm());
-  assert(Offset && "Offset must be in range 1-32!");
-  if (Offset == 32) Offset = 0;
+  assert(Offset < 32 && "Offset must be in range 0-31!");
   return Binary | (Offset << 7);
 }
 
@@ -1207,9 +1268,9 @@ getT2AddrModeSORegOpValue(const MCInst &MI, unsigned OpNum,
 
   // Encoded as [Rn, Rm, imm].
   // FIXME: Needs fixup support.
-  unsigned Value = getARMRegisterNumbering(MO1.getReg());
+  unsigned Value = CTX.getRegisterInfo()->getEncodingValue(MO1.getReg());
   Value <<= 4;
-  Value |= getARMRegisterNumbering(MO2.getReg());
+  Value |= CTX.getRegisterInfo()->getEncodingValue(MO2.getReg());
   Value <<= 2;
   Value |= MO3.getImm();
 
@@ -1223,7 +1284,7 @@ getT2AddrModeImm8OpValue(const MCInst &MI, unsigned OpNum,
   const MCOperand &MO2 = MI.getOperand(OpNum+1);
 
   // FIXME: Needs fixup support.
-  unsigned Value = getARMRegisterNumbering(MO1.getReg());
+  unsigned Value = CTX.getRegisterInfo()->getEncodingValue(MO1.getReg());
 
   // Even though the immediate is 8 bits long, we need 9 bits in order
   // to represent the (inverse of the) sign bit.
@@ -1285,7 +1346,7 @@ getT2SORegOpValue(const MCInst &MI, unsigned OpIdx,
   ARM_AM::ShiftOpc SOpc = ARM_AM::getSORegShOp(MO1.getImm());
 
   // Encode Rm.
-  unsigned Binary = getARMRegisterNumbering(MO.getReg());
+  unsigned Binary = CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
 
   // Encode the shift opcode.
   unsigned SBits = 0;
@@ -1318,8 +1379,8 @@ getBitfieldInvertedMaskOpValue(const MCInst &MI, unsigned Op,
   // msb of the mask.
   const MCOperand &MO = MI.getOperand(Op);
   uint32_t v = ~MO.getImm();
-  uint32_t lsb = CountTrailingZeros_32(v);
-  uint32_t msb = (32 - CountLeadingZeros_32 (v)) - 1;
+  uint32_t lsb = countTrailingZeros(v);
+  uint32_t msb = (32 - countLeadingZeros (v)) - 1;
   assert (v != 0 && lsb < 32 && msb < 32 && "Illegal bitfield mask!");
   return lsb | (msb << 5);
 }
@@ -1341,7 +1402,7 @@ getRegisterListOpValue(const MCInst &MI, unsigned Op,
 
   if (SPRRegs || DPRRegs) {
     // VLDM/VSTM
-    unsigned RegNo = getARMRegisterNumbering(Reg);
+    unsigned RegNo = CTX.getRegisterInfo()->getEncodingValue(Reg);
     unsigned NumRegs = (MI.getNumOperands() - Op) & 0xff;
     Binary |= (RegNo & 0x1f) << 8;
     if (SPRRegs)
@@ -1350,7 +1411,7 @@ getRegisterListOpValue(const MCInst &MI, unsigned Op,
       Binary |= NumRegs * 2;
   } else {
     for (unsigned I = Op, E = MI.getNumOperands(); I < E; ++I) {
-      unsigned RegNo = getARMRegisterNumbering(MI.getOperand(I).getReg());
+      unsigned RegNo = CTX.getRegisterInfo()->getEncodingValue(MI.getOperand(I).getReg());
       Binary |= 1 << RegNo;
     }
   }
@@ -1366,7 +1427,7 @@ getAddrMode6AddressOpValue(const MCInst &MI, unsigned Op,
   const MCOperand &Reg = MI.getOperand(Op);
   const MCOperand &Imm = MI.getOperand(Op + 1);
 
-  unsigned RegNo = getARMRegisterNumbering(Reg.getReg());
+  unsigned RegNo = CTX.getRegisterInfo()->getEncodingValue(Reg.getReg());
   unsigned Align = 0;
 
   switch (Imm.getImm()) {
@@ -1389,7 +1450,7 @@ getAddrMode6OneLane32AddressOpValue(const MCInst &MI, unsigned Op,
   const MCOperand &Reg = MI.getOperand(Op);
   const MCOperand &Imm = MI.getOperand(Op + 1);
 
-  unsigned RegNo = getARMRegisterNumbering(Reg.getReg());
+  unsigned RegNo = CTX.getRegisterInfo()->getEncodingValue(Reg.getReg());
   unsigned Align = 0;
 
   switch (Imm.getImm()) {
@@ -1415,7 +1476,7 @@ getAddrMode6DupAddressOpValue(const MCInst &MI, unsigned Op,
   const MCOperand &Reg = MI.getOperand(Op);
   const MCOperand &Imm = MI.getOperand(Op + 1);
 
-  unsigned RegNo = getARMRegisterNumbering(Reg.getReg());
+  unsigned RegNo = CTX.getRegisterInfo()->getEncodingValue(Reg.getReg());
   unsigned Align = 0;
 
   switch (Imm.getImm()) {
@@ -1434,7 +1495,7 @@ getAddrMode6OffsetOpValue(const MCInst &MI, unsigned Op,
                           SmallVectorImpl<MCFixup> &Fixups) const {
   const MCOperand &MO = MI.getOperand(Op);
   if (MO.getReg() == 0) return 0x0D;
-  return getARMRegisterNumbering(MO.getReg());
+  return CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
 }
 
 unsigned ARMMCCodeEmitter::

@@ -161,11 +161,11 @@ Typical components:\n\
 }
 
 /// \brief Compute the path to the main executable.
-llvm::sys::Path GetExecutablePath(const char *Argv0) {
+std::string GetExecutablePath(const char *Argv0) {
   // This just needs to be some symbol in the binary; C++ doesn't
   // allow taking the address of ::main however.
   void *P = (void*) (intptr_t) GetExecutablePath;
-  return llvm::sys::Path::GetMainExecutable(Argv0, P);
+  return llvm::sys::fs::getMainExecutable(Argv0, P);
 }
 
 int main(int argc, char **argv) {
@@ -179,7 +179,7 @@ int main(int argc, char **argv) {
   // tree.
   bool IsInDevelopmentTree;
   enum { MakefileStyle, CMakeStyle, CMakeBuildModeStyle } DevelopmentTreeLayout;
-  llvm::SmallString<256> CurrentPath(GetExecutablePath(argv[0]).str());
+  llvm::SmallString<256> CurrentPath(GetExecutablePath(argv[0]));
   std::string CurrentExecPrefix;
   std::string ActiveObjRoot;
 
@@ -190,9 +190,9 @@ int main(int argc, char **argv) {
     sys::path::parent_path(CurrentPath)).str();
 
   // Check to see if we are inside a development tree by comparing to possible
-  // locations (prefix style or CMake style). This could be wrong in the face of
-  // symbolic links, but is good enough.
-  if (CurrentExecPrefix == std::string(LLVM_OBJ_ROOT) + "/" + LLVM_BUILDMODE) {
+  // locations (prefix style or CMake style).
+  if (sys::fs::equivalent(CurrentExecPrefix,
+                          Twine(LLVM_OBJ_ROOT) + "/" + LLVM_BUILDMODE)) {
     IsInDevelopmentTree = true;
     DevelopmentTreeLayout = MakefileStyle;
 
@@ -204,11 +204,12 @@ int main(int argc, char **argv) {
     } else {
       ActiveObjRoot = LLVM_OBJ_ROOT;
     }
-  } else if (CurrentExecPrefix == std::string(LLVM_OBJ_ROOT)) {
+  } else if (sys::fs::equivalent(CurrentExecPrefix, LLVM_OBJ_ROOT)) {
     IsInDevelopmentTree = true;
     DevelopmentTreeLayout = CMakeStyle;
     ActiveObjRoot = LLVM_OBJ_ROOT;
-  } else if (CurrentExecPrefix == std::string(LLVM_OBJ_ROOT) + "/bin") {
+  } else if (sys::fs::equivalent(CurrentExecPrefix,
+                                 Twine(LLVM_OBJ_ROOT) + "/bin")) {
     IsInDevelopmentTree = true;
     DevelopmentTreeLayout = CMakeBuildModeStyle;
     ActiveObjRoot = LLVM_OBJ_ROOT;

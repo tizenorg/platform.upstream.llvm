@@ -376,12 +376,14 @@ def fsqrt      : SDNode<"ISD::FSQRT"      , SDTFPUnaryOp>;
 def fsin       : SDNode<"ISD::FSIN"       , SDTFPUnaryOp>;
 def fcos       : SDNode<"ISD::FCOS"       , SDTFPUnaryOp>;
 def fexp2      : SDNode<"ISD::FEXP2"      , SDTFPUnaryOp>;
+def fpow       : SDNode<"ISD::FPOW"       , SDTFPBinOp>;
 def flog2      : SDNode<"ISD::FLOG2"      , SDTFPUnaryOp>;
 def frint      : SDNode<"ISD::FRINT"      , SDTFPUnaryOp>;
 def ftrunc     : SDNode<"ISD::FTRUNC"     , SDTFPUnaryOp>;
 def fceil      : SDNode<"ISD::FCEIL"      , SDTFPUnaryOp>;
 def ffloor     : SDNode<"ISD::FFLOOR"     , SDTFPUnaryOp>;
 def fnearbyint : SDNode<"ISD::FNEARBYINT" , SDTFPUnaryOp>;
+def frnd       : SDNode<"ISD::FROUND"     , SDTFPUnaryOp>;
 
 def fround     : SDNode<"ISD::FP_ROUND"   , SDTFPRoundOp>;
 def fextend    : SDNode<"ISD::FP_EXTEND"  , SDTFPExtendOp>;
@@ -404,13 +406,15 @@ def brind      : SDNode<"ISD::BRIND"      , SDTBrind,  [SDNPHasChain]>;
 def br         : SDNode<"ISD::BR"         , SDTBr,     [SDNPHasChain]>;
 def trap       : SDNode<"ISD::TRAP"       , SDTNone,
                         [SDNPHasChain, SDNPSideEffect]>;
+def debugtrap  : SDNode<"ISD::DEBUGTRAP"  , SDTNone,
+                        [SDNPHasChain, SDNPSideEffect]>;
 
 def prefetch   : SDNode<"ISD::PREFETCH"   , SDTPrefetch,
                         [SDNPHasChain, SDNPMayLoad, SDNPMayStore,
                          SDNPMemOperand]>;
 
-def membarrier : SDNode<"ISD::MEMBARRIER" , SDTMemBarrier,
-                        [SDNPHasChain, SDNPSideEffect]>;
+def readcyclecounter : SDNode<"ISD::READCYCLECOUNTER", SDTIntLeaf,
+                     [SDNPHasChain, SDNPSideEffect]>;
 
 def atomic_fence : SDNode<"ISD::ATOMIC_FENCE" , SDTAtomicFence,
                           [SDNPHasChain, SDNPSideEffect]>;
@@ -440,9 +444,9 @@ def atomic_load_umin : SDNode<"ISD::ATOMIC_LOAD_UMIN", SDTAtomic2,
 def atomic_load_umax : SDNode<"ISD::ATOMIC_LOAD_UMAX", SDTAtomic2,
                     [SDNPHasChain, SDNPMayStore, SDNPMayLoad, SDNPMemOperand]>;
 def atomic_load      : SDNode<"ISD::ATOMIC_LOAD", SDTAtomicLoad,
-                    [SDNPHasChain, SDNPMayStore, SDNPMayLoad, SDNPMemOperand]>;
+                    [SDNPHasChain, SDNPMayLoad, SDNPMemOperand]>;
 def atomic_store     : SDNode<"ISD::ATOMIC_STORE", SDTAtomicStore,
-                    [SDNPHasChain, SDNPMayStore, SDNPMayLoad, SDNPMemOperand]>;
+                    [SDNPHasChain, SDNPMayStore, SDNPMemOperand]>;
 
 // Do not use ld, st directly. Use load, extload, sextload, zextload, store,
 // and truncst (see below).
@@ -461,6 +465,8 @@ def vector_extract : SDNode<"ISD::EXTRACT_VECTOR_ELT",
     SDTypeProfile<1, 2, [SDTCisPtrTy<2>]>, []>;
 def vector_insert : SDNode<"ISD::INSERT_VECTOR_ELT",
     SDTypeProfile<1, 3, [SDTCisSameAs<0, 1>, SDTCisPtrTy<3>]>, []>;
+def concat_vectors : SDNode<"ISD::CONCAT_VECTORS",
+    SDTypeProfile<1, 2, [SDTCisVec<0>, SDTCisVec<1>, SDTCisSameAs<1, 2>]>,[]>;
 
 // This operator does not do subvector type checking.  The ARM
 // backend, at least, needs it.
@@ -592,6 +598,13 @@ def immAllZerosV: PatLeaf<(build_vector), [{
 def not  : PatFrag<(ops node:$in), (xor node:$in, -1)>;
 def vnot : PatFrag<(ops node:$in), (xor node:$in, immAllOnesV)>;
 def ineg : PatFrag<(ops node:$in), (sub 0, node:$in)>;
+
+// null_frag - The null pattern operator is used in multiclass instantiations
+// which accept an SDPatternOperator for use in matching patterns for internal
+// definitions. When expanding a pattern, if the null fragment is referenced
+// in the expansion, the pattern is discarded and it is as-if '[]' had been
+// specified. This allows multiclasses to have the isel patterns be optional.
+def null_frag : SDPatternOperator;
 
 // load fragments.
 def unindexedload : PatFrag<(ops node:$ptr), (ld node:$ptr), [{
