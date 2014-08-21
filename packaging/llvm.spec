@@ -57,6 +57,7 @@ functionality.
 Summary:        Libraries and header files for LLVM
 Requires:       %{name} = %{version}-%{release}
 Requires:       libffi-devel
+Requires:       zlib-devel
 Requires:       libstdc++-devel >= 3.4
 Provides:       llvm-static = %{version}-%{release}
 Requires(pre):         update-alternatives
@@ -82,7 +83,7 @@ License:        NCSA
 Requires:       llvm = %{version}-%{release}
 # clang requires gcc, clang++ requires libstdc++-devel
 Requires:       gcc
-Requires:       libstdc++-devel >= %{gcc_version}
+Requires:       libstdc++-devel >= 4.8
 
 %description -n clang
 clang: noun
