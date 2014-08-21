@@ -57,6 +57,7 @@ functionality.
 Summary:        Libraries and header files for LLVM
 Requires:       %{name} = %{version}-%{release}
 Requires:       libffi-devel
+Requires:       zlib-devel
 Requires:       libstdc++-devel >= 3.4
 Provides:       llvm-static = %{version}-%{release}
 Requires(pre):         update-alternatives
