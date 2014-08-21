@@ -1,5 +1,4 @@
 %bcond_with doxygen
-%global gcc_version 4.8
 %bcond_without clang
 
 %global downloadurl http://llvm.org/%{?prerel:pre-}releases/%{version}%{?prerel:/%{prerel}}
@@ -14,7 +13,7 @@
 %endif
 
 Name:           llvm
-Version:        3.1
+Version:        3.4.2
 Release:        0
 Summary:        The Low Level Virtual Machine
 
@@ -22,7 +21,7 @@ Group:          Development/Toolchain
 License:        NCSA
 URL:            http://llvm.org/
 Source0:        llvm-%{version}.src.tar.gz
-Source1:        clang-%{version}.src.tar.gz
+Source1:        cfe-%{version}.src.tar.gz
 # multilib fixes
 Source2:        llvm-Config-config.h
 Source3:        llvm-Config-llvm-config.h
@@ -160,7 +159,7 @@ API documentation for the Clang compiler.
 cp %{SOURCE1001} .
 rm -r -f tools/clang
 %if %{with clang}
-mv clang-%{version}%{?prerel}.src tools/clang
+mv cfe-%{version}%{?prerel}.src tools/clang
 %endif
 
 
