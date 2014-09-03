@@ -186,7 +186,7 @@ sed -i 's|/lib /usr/lib $lt_ld_extra|%{_libdir} $lt_ld_extra|' \
 %if %{with gold}
   --with-binutils-include=%{_includedir} \
 %endif
-  --enable-targets=host \
+  --enable-targets=all \
 %ifarch armv7hl armv7l
   --with-cpu=cortex-a8 \
   --with-tune=cortex-a8 \
