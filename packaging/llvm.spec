@@ -344,6 +344,7 @@ exit 0
 %{_bindir}/bugpoint
 %{_bindir}/llc
 %{_bindir}/lli
+%{_bindir}/lli-child-target
 %exclude %{_bindir}/llvm-config-%{__isa_bits}
 %{_bindir}/llvm*
 %{_bindir}/macho-dump
