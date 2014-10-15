@@ -1,0 +1,6 @@
+* Mon Mar 18 2013 Anas Nashif <anas.nashif@intel.com> submit/trunk/20121229.052311@8250b59
+- Fixed package groups
+
+* Fri Dec 28 2012 Anas Nashif <anas.nashif@intel.com> upstream/3.1@8ca704e
+- require correct version of libstdc++-devel
+
